@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.env
+.DS_Store
+
+# SQLite database and WAL files
+server/carethread.db
+server/carethread.db-shm
+server/carethread.db-wal
