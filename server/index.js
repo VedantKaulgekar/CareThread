@@ -59,8 +59,30 @@ function publicUser(u) {
 }
 
 // ---------- AUTH ROUTES ----------
+// ---------- AUTH ROUTES ----------
+
+// Validation helpers
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function isValidPassword(password) {
+  return (
+    password.length >= 6 &&
+    /[A-Za-z]/.test(password) &&
+    /\d/.test(password)
+  );
+}
+
+function isValidPhone(phone) {
+  // Exactly 10 digits
+  return /^\d{10}$/.test(phone);
+}
+
+
+// ---------- SIGNUP ----------
 app.post("/api/auth/signup", (req, res) => {
-  const {
+  let {
     name,
     email,
     password,
@@ -71,28 +93,99 @@ app.post("/api/auth/signup", (req, res) => {
     medical_conditions,
     specialization,
   } = req.body;
+
+  // Basic required fields
   if (!name || !email || !password || !role) {
-    return res.status(400).json({ error: "Missing required fields" });
+    return res.status(400).json({
+      error: "Missing required fields",
+    });
   }
+
+  // Clean email
+  email = email.trim().toLowerCase();
+
+  // Validate email
+  if (!isValidEmail(email)) {
+    return res.status(400).json({
+      error: "Please enter a valid email address",
+    });
+  }
+
+  // Validate role
   if (!["doctor", "patient"].includes(role)) {
-    return res.status(400).json({ error: "Invalid role" });
+    return res.status(400).json({
+      error: "Invalid role",
+    });
   }
+
+  // Validate password
+  if (!isValidPassword(password)) {
+    return res.status(400).json({
+      error:
+        "Password must be at least 6 characters and contain at least one letter and one number",
+    });
+  }
+
+  // Patient-specific validation
+  if (role === "patient") {
+
+    // Age validation
+    if (age !== "" && age !== null && age !== undefined) {
+      age = Number(age);
+
+      if (!Number.isInteger(age) || age < 1 || age > 140) {
+        return res.status(400).json({
+          error: "Age must be between 1 and 140",
+        });
+      }
+    }
+
+    // Phone validation
+    if (phone && phone.trim() !== "") {
+
+      // Remove spaces, +, hyphens etc.
+      phone = phone.replace(/\D/g, "");
+
+      if (!isValidPhone(phone)) {
+        return res.status(400).json({
+          error: "Phone number must contain exactly 10 digits",
+        });
+      }
+    }
+  }
+
+  // Check if account already exists
   const existing = db
     .prepare("SELECT id FROM users WHERE email = ?")
     .get(email);
-  if (existing)
-    return res.status(409).json({ error: "Email already registered" });
 
+  if (existing) {
+    return res.status(409).json({
+      error: "Email already registered",
+    });
+  }
+
+  // Create user
   const id = uuidv4();
   const password_hash = bcrypt.hashSync(password, 10);
-  db.prepare(
-    `
-    INSERT INTO users (id, name, email, password_hash, role, age, gender, phone, medical_conditions, specialization)
+
+  db.prepare(`
+    INSERT INTO users (
+      id,
+      name,
+      email,
+      password_hash,
+      role,
+      age,
+      gender,
+      phone,
+      medical_conditions,
+      specialization
+    )
     VALUES (?,?,?,?,?,?,?,?,?,?)
-  `,
-  ).run(
+  `).run(
     id,
-    name,
+    name.trim(),
     email,
     password_hash,
     role,
@@ -103,31 +196,71 @@ app.post("/api/auth/signup", (req, res) => {
     specialization || null,
   );
 
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+  const user = db
+    .prepare("SELECT * FROM users WHERE id = ?")
+    .get(id);
+
   const token = signToken(user);
-  res.json({ token, user: publicUser(user) });
+
+  res.json({
+    token,
+    user: publicUser(user),
+  });
 });
 
+
+// ---------- LOGIN ----------
 app.post("/api/auth/login", (req, res) => {
-  const { email, password, role } = req.body;
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-  if (role && user.role !== role)
-    return res
-      .status(401)
-      .json({ error: `No ${role} account found for this email` });
-  if (!bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: "Invalid credentials" });
+  let { email, password, role } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({
+      error: "Email and password are required",
+    });
   }
+
+  email = email.trim().toLowerCase();
+
+  // Validate email format
+  if (!isValidEmail(email)) {
+    return res.status(400).json({
+      error: "Please enter a valid email address",
+    });
+  }
+
+  // Find account
+  const user = db
+    .prepare("SELECT * FROM users WHERE email = ?")
+    .get(email);
+
+  // IMPORTANT: Account does not exist
+  if (!user) {
+    return res.status(404).json({
+      error: "No account found with this email",
+    });
+  }
+
+  // Account exists, but wrong role selected
+  if (role && user.role !== role) {
+    return res.status(401).json({
+      error: `No ${role} account found for this email`,
+    });
+  }
+
+  // Account exists but password is wrong
+  if (!bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({
+      error: "Incorrect password",
+    });
+  }
+
   const token = signToken(user);
-  res.json({ token, user: publicUser(user) });
-});
 
-app.get("/api/auth/me", auth(), (req, res) => {
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
-  res.json({ user: publicUser(user) });
+  res.json({
+    token,
+    user: publicUser(user),
+  });
 });
-
 // ---------- ROOM ROUTES ----------
 app.post("/api/rooms", auth("doctor"), (req, res) => {
   const { title } = req.body;
