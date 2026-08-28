@@ -133,13 +133,13 @@ input, select, textarea {
 }
 
 /* ---------- Forms ---------- */
-.field { margin-bottom: 16px; }
+.field { margin-bottom: 20px; }
 .field label {
   display: block;
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-soft);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 .field input, .field select, .field textarea {
   width: 100%;
@@ -154,31 +154,43 @@ input, select, textarea {
 .field input:focus, .field select:focus, .field textarea:focus {
   border-color: var(--purple);
 }
-.field-row { display: flex; gap: 14px; }
+.field-row { display: flex; gap: 34px; }
 .field-row .field { flex: 1; }
 
 .role-toggle {
   display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
+  justify-content: center; /* centers Doctor + Patient boxes */
+  align-items: center;
+  gap: 60px;
+  margin: 24px auto;
 }
 .role-option {
-  flex: 1;
-  padding: 14px;
-  border-radius: 12px;
-  border: 1.5px solid var(--line);
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center; 
+  width: 150px;
+  height: 120px;
+  border-radius: 14px;
+  border: solid 2px;
+
   cursor: pointer;
-  transition: all 0.15s;
-  background: var(--paper-raised);
 }
 .role-option.active {
   border-color: var(--purple);
   background: var(--purple-light);
   box-shadow: inset 0 0 0 1px var(--purple);
 }
-.role-option .icon { font-size: 24px; display: block; margin-bottom: 4px; }
-.role-option .label { font-weight: 600; font-size: 14px; }
+.role-option .icon {
+  font-size: 44px;
+  display: block;
+  margin: 0 auto 12px;
+}
+.role-option .label {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+}
 
 /* ---------- Badges ---------- */
 .badge {
