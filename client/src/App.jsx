@@ -8,6 +8,7 @@ import Signup from './pages/Signup.jsx';
 import DoctorDashboard from './pages/DoctorDashboard.jsx';
 import PatientDashboard from './pages/PatientDashboard.jsx';
 import VisitRoom from './pages/VisitRoom.jsx';
+import Settings from './pages/Settings.jsx';
 
 function Protected({ role, children }) {
   const { user } = useAuth();
@@ -43,6 +44,14 @@ export default function App() {
         element={
           <Protected>
             <VisitRoom />
+          </Protected>
+        }
+      />
+          <Route
+        path="/settings"
+        element={
+          <Protected>
+            <Settings />
           </Protected>
         }
       />

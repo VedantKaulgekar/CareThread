@@ -261,6 +261,59 @@ app.post("/api/auth/login", (req, res) => {
     user: publicUser(user),
   });
 });
+
+// ---------- PROFILE ROUTES ----------
+app.put("/api/auth/me", auth(), (req, res) => {
+  const { name, phone, specialization, medical_conditions } = req.body;
+
+  const existing = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+  if (!existing) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET name = ?, phone = ?, specialization = ?, medical_conditions = ?
+    WHERE id = ?
+  `).run(
+    name !== undefined ? name : existing.name,
+    phone !== undefined ? phone : existing.phone,
+    specialization !== undefined ? specialization : existing.specialization,
+    medical_conditions !== undefined ? medical_conditions : existing.medical_conditions,
+    req.user.id,
+  );
+
+  const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+  res.json({ user: publicUser(updated) });
+});
+
+app.put("/api/auth/password", auth(), (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Both current and new password are required" });
+  }
+  if (!isValidPassword(newPassword)) {
+    return res.status(400).json({
+      error: "New password must be at least 6 characters and contain at least one letter and one number",
+    });
+  }
+
+  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  if (!bcrypt.compareSync(currentPassword, user.password_hash)) {
+    return res.status(401).json({ error: "Current password is incorrect" });
+  }
+
+  const newHash = bcrypt.hashSync(newPassword, 10);
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newHash, req.user.id);
+
+  res.json({ ok: true });
+});
+
 // ---------- ROOM ROUTES ----------
 app.post("/api/rooms", auth("doctor"), (req, res) => {
   const { title } = req.body;
