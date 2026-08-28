@@ -1,1339 +1,667 @@
+require("dotenv").config();
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
+const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const { Server } = require("socket.io");
-
 const db = require("./db");
 
-
-// =========================================================
-// APP SETUP
-// =========================================================
-
 const app = express();
-
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE"],
   },
 });
 
 const JWT_SECRET =
-  "carethread_hackathon_secret_key_change_in_prod";
+  process.env.JWT_SECRET || "carethread_hackathon_secret_key_change_in_prod";
 
-const PORT =
-  process.env.PORT || 4000;
+const PORT = process.env.PORT || 4000;
 
-
-// =========================================================
-// MIDDLEWARE
-// =========================================================
-
-app.use(
-  cors({
-    origin: "*",
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "DELETE",
-      "OPTIONS",
-    ],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-    ],
-  })
-);
-
+app.use(cors());
 app.use(express.json());
 
-
-// =========================================================
-// HEALTH CHECK
-// =========================================================
-
-app.get(
-  "/api/health",
-  (req, res) => {
-    res.json({
-      ok: true,
-      message:
-        "CareThread API is running",
-    });
-  }
-);
-
-
-// =========================================================
+// ============================================================
 // AUTH MIDDLEWARE
-// =========================================================
+// ============================================================
 
 function auth(requiredRole) {
-
   return (req, res, next) => {
-
-    const header =
-      req.headers.authorization;
+    const header = req.headers.authorization;
 
     if (!header) {
-
       return res.status(401).json({
-        error:
-          "No token provided",
+        error: "No token provided",
       });
     }
 
-
-    const parts =
-      header.split(" ");
-
-    const token =
-      parts[1];
-
+    const token = header.split(" ")[1];
 
     if (!token) {
-
       return res.status(401).json({
-        error:
-          "Invalid authorization header",
+        error: "Invalid authorization header",
       });
     }
 
-
     try {
+      const decoded = jwt.verify(token, JWT_SECRET);
 
-      const decoded =
-        jwt.verify(
-          token,
-          JWT_SECRET
-        );
-
-
-      if (
-        requiredRole &&
-        decoded.role !== requiredRole
-      ) {
-
+      if (requiredRole && decoded.role !== requiredRole) {
         return res.status(403).json({
-          error:
-            `Requires ${requiredRole} role`,
+          error: `Requires ${requiredRole} role`,
         });
       }
 
-
-      req.user =
-        decoded;
-
-
+      req.user = decoded;
       next();
-
-    } catch (error) {
-
-      console.error(
-        "AUTH ERROR:",
-        error
-      );
-
+    } catch (e) {
       return res.status(401).json({
-        error:
-          "Invalid or expired token",
+        error: "Invalid or expired token",
       });
     }
   };
 }
 
-
-// =========================================================
-// ROOM CODE GENERATOR
-// =========================================================
+// ============================================================
+// HELPERS
+// ============================================================
 
 function genRoomCode() {
-
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
   let code = "";
 
-  for (
-    let i = 0;
-    i < 6;
-    i++
-  ) {
-
-    code +=
-      chars[
-        Math.floor(
-          Math.random() *
-          chars.length
-        )
-      ];
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
   }
 
   return code;
 }
 
-
-// =========================================================
-// JWT TOKEN
-// =========================================================
-
 function signToken(user) {
-
   return jwt.sign(
     {
-      id:
-        user.id,
-
-      name:
-        user.name,
-
-      email:
-        user.email,
-
-      role:
-        user.role,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
     },
-
     JWT_SECRET,
-
     {
-      expiresIn:
-        "7d",
-    }
+      expiresIn: "7d",
+    },
   );
 }
 
-
-// =========================================================
-// PUBLIC USER
-// =========================================================
-
 function publicUser(user) {
+  if (!user) return null;
 
-  const {
-    password_hash,
-    ...rest
-  } = user;
+  const { password_hash, ...rest } = user;
 
   return rest;
 }
 
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 
-// =========================================================
-// VALIDATION
-// =========================================================
+app.get("/api/health", async (req, res) => {
+  try {
+    const result = await db.query("SELECT NOW() AS now");
 
-function isValidEmail(email) {
+    res.json({
+      ok: true,
+      database: "connected",
+      time: result.rows[0].now,
+    });
+  } catch (error) {
+    console.error("Health check database error:", error);
 
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
-    email
-  );
-}
+    res.status(500).json({
+      ok: false,
+      database: "disconnected",
+    });
+  }
+});
 
+// ============================================================
+// AUTH ROUTES
+// ============================================================
 
-function isValidPassword(password) {
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      role,
+      gender,
+      phone,
+      medical_conditions,
+      specialization,
+    } = req.body;
 
-  return (
-    password.length >= 6 &&
-    /[A-Za-z]/.test(password) &&
-    /\d/.test(password)
-  );
-}
+    const age =
+      req.body.age === "" || req.body.age === undefined || req.body.age === null
+        ? null
+        : Number(req.body.age);
 
+    if (age !== null && (!Number.isInteger(age) || age < 0 || age > 150)) {
+      return res.status(400).json({
+        error: "Age must be a valid number",
+      });
+    }
 
-function isValidPhone(phone) {
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({
+        error: "Missing required fields",
+      });
+    }
 
-  return /^\d{10}$/.test(phone);
-}
+    if (!["doctor", "patient"].includes(role)) {
+      return res.status(400).json({
+        error: "Invalid role",
+      });
+    }
 
+    const normalizedEmail = email.trim().toLowerCase();
 
-// =========================================================
-// SIGNUP
-// =========================================================
+    // Check if user already exists
+    const existingResult = await db.query(
+      "SELECT id FROM users WHERE email = $1",
+      [normalizedEmail],
+    );
 
-app.post(
-  "/api/auth/signup",
-  (req, res) => {
+    if (existingResult.rows.length > 0) {
+      return res.status(409).json({
+        error: "Email already registered",
+      });
+    }
 
-    try {
+    const id = uuidv4();
 
-      let {
+    const password_hash = await bcrypt.hash(password, 10);
+
+    await db.query(
+      `
+      INSERT INTO users (
+        id,
         name,
         email,
-        password,
+        password_hash,
         role,
         age,
         gender,
         phone,
         medical_conditions,
-        specialization,
-      } = req.body;
-
-
-      if (
-        !name ||
-        !email ||
-        !password ||
-        !role
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Missing required fields",
-        });
-      }
-
-
-      email =
-        email
-          .trim()
-          .toLowerCase();
-
-
-      if (
-        !isValidEmail(email)
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Please enter a valid email address",
-        });
-      }
-
-
-      if (
-        ![
-          "doctor",
-          "patient",
-        ].includes(role)
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Invalid role",
-        });
-      }
-
-
-      if (
-        !isValidPassword(password)
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Password must be at least 6 characters and contain at least one letter and one number",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // PATIENT VALIDATION
-      // ---------------------------------------------------
-
-      if (
-        role === "patient"
-      ) {
-
-        if (
-          age !== "" &&
-          age !== null &&
-          age !== undefined
-        ) {
-
-          age =
-            Number(age);
-
-
-          if (
-            !Number.isInteger(age) ||
-            age < 1 ||
-            age > 140
-          ) {
-
-            return res.status(400).json({
-              error:
-                "Age must be between 1 and 140",
-            });
-          }
-        }
-
-
-        if (
-          phone &&
-          phone.trim() !== ""
-        ) {
-
-          phone =
-            phone.replace(
-              /\D/g,
-              ""
-            );
-
-
-          if (
-            !isValidPhone(phone)
-          ) {
-
-            return res.status(400).json({
-              error:
-                "Phone number must contain exactly 10 digits",
-            });
-          }
-        }
-      }
-
-
-      // ---------------------------------------------------
-      // CHECK EXISTING USER
-      // ---------------------------------------------------
-
-      const existing =
-        db
-          .prepare(
-            "SELECT id FROM users WHERE email = ?"
-          )
-          .get(email);
-
-
-      if (existing) {
-
-        return res.status(409).json({
-          error:
-            "Email already registered",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // CREATE USER
-      // ---------------------------------------------------
-
-      const id =
-        uuidv4();
-
-
-      const password_hash =
-        bcrypt.hashSync(
-          password,
-          10
-        );
-
-
-      db.prepare(`
-        INSERT INTO users (
-          id,
-          name,
-          email,
-          password_hash,
-          role,
-          age,
-          gender,
-          phone,
-          medical_conditions,
-          specialization
-        )
-
-        VALUES (
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        )
-      `).run(
-
+        specialization
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `,
+      [
         id,
-
-        name.trim(),
-
-        email,
-
+        name,
+        normalizedEmail,
         password_hash,
-
         role,
+        age ?? null,
+        gender ?? null,
+        phone ?? null,
+        medical_conditions ?? null,
+        specialization ?? null,
+      ],
+    );
 
-        age || null,
+    const userResult = await db.query("SELECT * FROM users WHERE id = $1", [
+      id,
+    ]);
 
-        gender || null,
+    const user = userResult.rows[0];
 
-        phone || null,
+    const token = signToken(user);
 
-        medical_conditions ||
-          null,
+    res.json({
+      token,
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Signup error:", error);
 
-        specialization ||
-          null
-
-      );
-
-
-      const user =
-        db
-          .prepare(
-            "SELECT * FROM users WHERE id = ?"
-          )
-          .get(id);
-
-
-      const token =
-        signToken(user);
-
-
-      res.json({
-
-        token,
-
-        user:
-          publicUser(user),
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "SIGNUP ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Signup failed",
+    // PostgreSQL unique constraint
+    if (error.code === "23505") {
+      return res.status(409).json({
+        error: "Email already registered",
       });
     }
+
+    res.status(500).json({
+      error: "Failed to create account",
+    });
   }
-);
+});
 
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
 
-// =========================================================
-// LOGIN
-// =========================================================
-
-app.post(
-  "/api/auth/login",
-  (req, res) => {
-
-    try {
-
-      let {
-        email,
-        password,
-        role,
-      } = req.body;
-
-
-      if (
-        !email ||
-        !password
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Email and password are required",
-        });
-      }
-
-
-      email =
-        email
-          .trim()
-          .toLowerCase();
-
-
-      if (
-        !isValidEmail(email)
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Please enter a valid email address",
-        });
-      }
-
-
-      const user =
-        db
-          .prepare(
-            "SELECT * FROM users WHERE email = ?"
-          )
-          .get(email);
-
-
-      if (!user) {
-
-        return res.status(404).json({
-          error:
-            "No account found with this email",
-        });
-      }
-
-
-      if (
-        role &&
-        user.role !== role
-      ) {
-
-        return res.status(401).json({
-          error:
-            `No ${role} account found for this email`,
-        });
-      }
-
-
-      if (
-        !bcrypt.compareSync(
-          password,
-          user.password_hash
-        )
-      ) {
-
-        return res.status(401).json({
-          error:
-            "Incorrect password",
-        });
-      }
-
-
-      const token =
-        signToken(user);
-
-
-      res.json({
-
-        token,
-
-        user:
-          publicUser(user),
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "LOGIN ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Login failed",
+    if (!email || !password) {
+      return res.status(400).json({
+        error: "Email and password are required",
       });
     }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const result = await db.query("SELECT * FROM users WHERE email = $1", [
+      normalizedEmail,
+    ]);
+
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(401).json({
+        error: "Invalid credentials",
+      });
+    }
+
+    if (role && user.role !== role) {
+      return res.status(401).json({
+        error: `No ${role} account found for this email`,
+      });
+    }
+
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+
+    if (!validPassword) {
+      return res.status(401).json({
+        error: "Invalid credentials",
+      });
+    }
+
+    const token = signToken(user);
+
+    res.json({
+      token,
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+
+    res.status(500).json({
+      error: "Login failed",
+    });
   }
-);
+});
 
+app.get("/api/auth/me", auth(), async (req, res) => {
+  try {
+    const result = await db.query("SELECT * FROM users WHERE id = $1", [
+      req.user.id,
+    ]);
 
-// =========================================================
-// CREATE WORKSPACE
-// =========================================================
+    const user = result.rows[0];
 
-app.post(
-  "/api/rooms",
-  auth("doctor"),
-  (req, res) => {
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
+      });
+    }
 
-    try {
+    res.json({
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Auth me error:", error);
 
-      const {
-        title,
-        visit_type,
-        frequency,
-      } = req.body;
+    res.status(500).json({
+      error: "Failed to fetch user",
+    });
+  }
+});
 
+// ============================================================
+// ROOM ROUTES
+// ============================================================
 
-      console.log(
-        "======================================"
-      );
+app.post("/api/rooms", auth("doctor"), async (req, res) => {
+  try {
+    const { title } = req.body;
 
-      console.log(
-        "CREATE WORKSPACE"
-      );
+    const id = uuidv4();
 
-      console.log(
-        "Doctor:",
-        req.user.id
-      );
+    // Generate a unique room code
+    let code;
 
-      console.log(
-        "Title:",
-        title
-      );
+    while (true) {
+      const candidate = genRoomCode();
 
-      console.log(
-        "Visit Type:",
-        visit_type
-      );
+      const existing = await db.query("SELECT id FROM rooms WHERE code = $1", [
+        candidate,
+      ]);
 
-      console.log(
-        "Frequency:",
-        frequency
-      );
-
-      console.log(
-        "======================================"
-      );
-
-
-      const id =
-        uuidv4();
-
-
-      let code =
-        genRoomCode();
-
-
-      while (
-        db
-          .prepare(
-            "SELECT id FROM rooms WHERE code = ?"
-          )
-          .get(code)
-      ) {
-
-        code =
-          genRoomCode();
+      if (existing.rows.length === 0) {
+        code = candidate;
+        break;
       }
+    }
 
-
-      db.prepare(`
-        INSERT INTO rooms (
-          id,
-          code,
-          title,
-          doctor_id,
-          status
-        )
-
-        VALUES (
-          ?,
-          ?,
-          ?,
-          ?,
-          'open'
-        )
-      `).run(
-
+    await db.query(
+      `
+      INSERT INTO rooms (
         id,
-
         code,
+        title,
+        doctor_id,
+        status
+      )
+      VALUES ($1,$2,$3,$4,'open')
+      `,
+      [id, code, title || "Trial Visit", req.user.id],
+    );
 
-        title ||
-          "Trial Visit",
+    const result = await db.query("SELECT * FROM rooms WHERE id = $1", [id]);
 
-        req.user.id
+    res.json({
+      room: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Create room error:", error);
 
-      );
+    res.status(500).json({
+      error: "Failed to create room",
+    });
+  }
+});
 
+app.get("/api/rooms/mine", auth("doctor"), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        r.*,
+        u.name AS patient_name,
+        u.email AS patient_email
+      FROM rooms r
+      LEFT JOIN users u
+        ON r.patient_id = u.id
+      WHERE r.doctor_id = $1
+      ORDER BY r.created_at DESC
+      `,
+      [req.user.id],
+    );
 
-      const room =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE id = ?"
-          )
-          .get(id);
+    res.json({
+      rooms: result.rows,
+    });
+  } catch (error) {
+    console.error("Doctor rooms error:", error);
 
+    res.status(500).json({
+      error: "Failed to fetch rooms",
+    });
+  }
+});
 
-      res.status(201).json({
-        room,
-      });
+app.get("/api/rooms/patient/mine", auth("patient"), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+        SELECT
+          r.*,
+          u.name AS doctor_name
+        FROM rooms r
+        LEFT JOIN users u
+          ON r.doctor_id = u.id
+        WHERE r.patient_id = $1
+        ORDER BY r.created_at DESC
+        `,
+      [req.user.id],
+    );
 
-    } catch (error) {
+    res.json({
+      rooms: result.rows,
+    });
+  } catch (error) {
+    console.error("Patient rooms error:", error);
 
-      console.error(
-        "CREATE WORKSPACE ERROR:",
-        error
-      );
+    res.status(500).json({
+      error: "Failed to fetch rooms",
+    });
+  }
+});
 
-      res.status(500).json({
-        error:
-          "Failed to create workspace",
+app.post("/api/rooms/join", auth("patient"), async (req, res) => {
+  try {
+    const code = (req.body.code || "").toUpperCase().trim();
+
+    if (!code) {
+      return res.status(400).json({
+        error: "Room code is required",
       });
     }
-  }
-);
 
+    const result = await db.query("SELECT * FROM rooms WHERE code = $1", [
+      code,
+    ]);
 
-// =========================================================
-// GET DOCTOR WORKSPACES
-// =========================================================
+    const room = result.rows[0];
 
-app.get(
-  "/api/rooms/mine",
-  auth("doctor"),
-  (req, res) => {
-
-    try {
-
-      const rooms =
-        db
-          .prepare(`
-            SELECT
-              r.*,
-
-              u.name AS patient_name,
-
-              u.email AS patient_email
-
-            FROM rooms r
-
-            LEFT JOIN users u
-              ON r.patient_id = u.id
-
-            WHERE
-              r.doctor_id = ?
-
-            ORDER BY
-              r.created_at DESC
-          `)
-          .all(
-            req.user.id
-          );
-
-
-      res.json({
-        rooms,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "LOAD WORKSPACES ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load workspaces",
+    if (!room) {
+      return res.status(404).json({
+        error: "Invalid room code",
       });
     }
-  }
-);
 
-
-// =========================================================
-// DELETE WORKSPACE
-// =========================================================
-
-app.delete(
-  "/api/rooms/id/:id",
-  auth("doctor"),
-  (req, res) => {
-
-    try {
-
-      const roomId =
-        req.params.id;
-
-
-      console.log(
-        "======================================"
-      );
-
-      console.log(
-        "DELETE WORKSPACE"
-      );
-
-      console.log(
-        "Workspace ID:",
-        roomId
-      );
-
-      console.log(
-        "Doctor ID:",
-        req.user.id
-      );
-
-      console.log(
-        "======================================"
-      );
-
-
-      // ---------------------------------------------------
-      // VERIFY WORKSPACE BELONGS TO DOCTOR
-      // ---------------------------------------------------
-
-      const room =
-        db
-          .prepare(`
-            SELECT *
-            FROM rooms
-
-            WHERE
-              id = ?
-
-            AND
-              doctor_id = ?
-          `)
-          .get(
-            roomId,
-            req.user.id
-          );
-
-
-      if (!room) {
-
-        return res.status(404).json({
-          error:
-            "Workspace not found or you do not have permission to delete it",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // DELETE VITALS FIRST
-      // ---------------------------------------------------
-
-      const vitalResult =
-        db
-          .prepare(`
-            DELETE FROM vitals
-
-            WHERE
-              room_id = ?
-          `)
-          .run(
-            roomId
-          );
-
-
-      console.log(
-        "Vitals deleted:",
-        vitalResult.changes
-      );
-
-
-      // ---------------------------------------------------
-      // DELETE ROOM
-      // ---------------------------------------------------
-
-      const roomResult =
-        db
-          .prepare(`
-            DELETE FROM rooms
-
-            WHERE
-              id = ?
-
-            AND
-              doctor_id = ?
-          `)
-          .run(
-            roomId,
-            req.user.id
-          );
-
-
-      console.log(
-        "Rooms deleted:",
-        roomResult.changes
-      );
-
-
-      if (
-        roomResult.changes !== 1
-      ) {
-
-        return res.status(500).json({
-          error:
-            "Workspace was not deleted",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // NOTIFY USERS
-      // ---------------------------------------------------
-
-      io
-        .to(
-          `room:${room.code}`
-        )
-        .emit(
-          "room:deleted"
-        );
-
-
-      console.log(
-        "Workspace deleted successfully"
-      );
-
-
-      res.json({
-
-        ok: true,
-
-        message:
-          "Workspace deleted successfully",
-
-        roomId:
-
-          roomId,
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "DELETE WORKSPACE ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to delete workspace",
+    if (room.patient_id && room.patient_id !== req.user.id) {
+      return res.status(409).json({
+        error: "This room already has a patient",
       });
     }
-  }
-);
 
-
-// =========================================================
-// PATIENT WORKSPACES
-// =========================================================
-
-app.get(
-  "/api/rooms/patient/mine",
-  auth("patient"),
-  (req, res) => {
-
-    try {
-
-      const rooms =
-        db
-          .prepare(`
-            SELECT
-              r.*,
-
-              u.name AS doctor_name
-
-            FROM rooms r
-
-            LEFT JOIN users u
-              ON r.doctor_id = u.id
-
-            WHERE
-              r.patient_id = ?
-
-            ORDER BY
-              r.created_at DESC
-          `)
-          .all(
-            req.user.id
-          );
-
-
-      res.json({
-        rooms,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "PATIENT ROOMS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load patient rooms",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// PATIENT JOIN ROOM
-// =========================================================
-
-app.post(
-  "/api/rooms/join",
-  auth("patient"),
-  (req, res) => {
-
-    try {
-
-      const cleanCode =
-        (req.body.code || "")
-          .toUpperCase()
-          .trim();
-
-
-      const room =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE code = ?"
-          )
-          .get(
-            cleanCode
-          );
-
-
-      if (!room) {
-
-        return res.status(404).json({
-          error:
-            "Invalid room code",
-        });
-      }
-
-
-      if (
-        room.patient_id &&
-        room.patient_id !== req.user.id
-      ) {
-
-        return res.status(409).json({
-          error:
-            "This room already has a patient",
-        });
-      }
-
-
-      db.prepare(`
+    await db.query(
+      `
         UPDATE rooms
-
         SET
-          patient_id = ?,
-
+          patient_id = $1,
           status = 'active'
+        WHERE id = $2
+        `,
+      [req.user.id, room.id],
+    );
 
-        WHERE
-          id = ?
-      `).run(
+    const updatedResult = await db.query("SELECT * FROM rooms WHERE id = $1", [
+      room.id,
+    ]);
 
-        req.user.id,
+    res.json({
+      room: updatedResult.rows[0],
+    });
+  } catch (error) {
+    console.error("Join room error:", error);
 
-        room.id
+    res.status(500).json({
+      error: "Failed to join room",
+    });
+  }
+});
 
-      );
+app.get("/api/rooms/:code", auth(), async (req, res) => {
+  try {
+    const code = req.params.code.toUpperCase();
 
+    const result = await db.query(
+      `
+      SELECT
+        r.*,
+        d.name AS doctor_name,
+        p.name AS patient_name
+      FROM rooms r
+      LEFT JOIN users d
+        ON r.doctor_id = d.id
+      LEFT JOIN users p
+        ON r.patient_id = p.id
+      WHERE r.code = $1
+      `,
+      [code],
+    );
 
-      const updated =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE id = ?"
-          )
-          .get(
-            room.id
-          );
+    const room = result.rows[0];
 
-
-      res.json({
-        room:
-          updated,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "JOIN ROOM ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to join workspace",
+    if (!room) {
+      return res.status(404).json({
+        error: "Room not found",
       });
     }
-  }
-);
 
-
-// =========================================================
-// GET ROOM BY CODE
-// =========================================================
-
-app.get(
-  "/api/rooms/:code",
-  auth(),
-  (req, res) => {
-
-    try {
-
-      const room =
-        db
-          .prepare(`
-            SELECT
-              r.*,
-
-              d.name AS doctor_name,
-
-              p.name AS patient_name
-
-            FROM rooms r
-
-            LEFT JOIN users d
-              ON r.doctor_id = d.id
-
-            LEFT JOIN users p
-              ON r.patient_id = p.id
-
-            WHERE
-              r.code = ?
-          `)
-          .get(
-            req.params.code.toUpperCase()
-          );
-
-
-      if (!room) {
-
-        return res.status(404).json({
-          error:
-            "Room not found",
-        });
-      }
-
-
-      if (
-        req.user.role === "doctor" &&
-        room.doctor_id !== req.user.id
-      ) {
-
-        return res.status(403).json({
-          error:
-            "Not your room",
-        });
-      }
-
-
-      if (
-        req.user.role === "patient" &&
-        room.patient_id &&
-        room.patient_id !== req.user.id
-      ) {
-
-        return res.status(403).json({
-          error:
-            "Not your room",
-        });
-      }
-
-
-      res.json({
-        room,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "GET ROOM ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load room",
+    if (req.user.role === "doctor" && room.doctor_id !== req.user.id) {
+      return res.status(403).json({
+        error: "Not your room",
       });
     }
+
+    if (
+      req.user.role === "patient" &&
+      room.patient_id &&
+      room.patient_id !== req.user.id
+    ) {
+      return res.status(403).json({
+        error: "Not your room",
+      });
+    }
+
+    res.json({
+      room,
+    });
+  } catch (error) {
+    console.error("Get room error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch room",
+    });
   }
-);
+});
 
+app.post("/api/rooms/:code/complete", auth("doctor"), async (req, res) => {
+  try {
+    const code = req.params.code.toUpperCase();
 
-// =========================================================
-// COMPLETE ROOM
-// =========================================================
+    const result = await db.query("SELECT * FROM rooms WHERE code = $1", [
+      code,
+    ]);
 
-app.post(
-  "/api/rooms/:code/complete",
-  auth("doctor"),
-  (req, res) => {
+    const room = result.rows[0];
 
-    try {
+    if (!room || room.doctor_id !== req.user.id) {
+      return res.status(404).json({
+        error: "Room not found",
+      });
+    }
 
-      const room =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE code = ?"
-          )
-          .get(
-            req.params.code.toUpperCase()
-          );
-
-
-      if (
-        !room ||
-        room.doctor_id !== req.user.id
-      ) {
-
-        return res.status(404).json({
-          error:
-            "Room not found",
-        });
-      }
-
-
-      db.prepare(`
+    await db.query(
+      `
         UPDATE rooms
-
         SET
           status = 'completed',
+          completed_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        `,
+      [room.id],
+    );
 
-          completed_at =
-            CURRENT_TIMESTAMP
+    // Tell everyone still in the call that the visit is over.
+    io.to(`room:${room.code}`).emit("room:completed");
 
-        WHERE
-          id = ?
-      `).run(
-        room.id
-      );
+    res.json({
+      ok: true,
+    });
+  } catch (error) {
+    console.error("Complete room error:", error);
 
+    res.status(500).json({
+      error: "Failed to complete room",
+    });
+  }
+});
 
-      io
-        .to(
-          `room:${room.code}`
-        )
-        .emit(
-          "room:completed"
-        );
+// ============================================================
+// VITALS ROUTES
+// ============================================================
 
+app.post("/api/vitals", auth("doctor"), async (req, res) => {
+  try {
+    const {
+      room_id,
+      patient_id,
+      stage,
+      temperature,
+      bp_systolic,
+      bp_diastolic,
+      sugar,
+      spo2,
+      heart_rate,
+      dosage_given,
+      notes,
+    } = req.body;
 
-      res.json({
-        ok: true,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "COMPLETE ROOM ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to complete room",
+    if (!room_id || !patient_id || !stage) {
+      return res.status(400).json({
+        error: "Missing required fields",
       });
     }
-  }
-);
 
+    const validStages = ["pre_dosage", "post_dosage", "general"];
 
-// =========================================================
-// VITALS - CREATE
-// =========================================================
+    if (!validStages.includes(stage)) {
+      return res.status(400).json({
+        error: "Invalid stage",
+      });
+    }
 
-app.post(
-  "/api/vitals",
-  auth("doctor"),
-  (req, res) => {
+    // Verify room belongs to doctor and patient
+    const roomResult = await db.query(
+      `
+      SELECT *
+      FROM rooms
+      WHERE id = $1
+      `,
+      [room_id],
+    );
 
-    try {
+    const room = roomResult.rows[0];
 
-      const {
+    if (!room) {
+      return res.status(404).json({
+        error: "Room not found",
+      });
+    }
+
+    if (room.doctor_id !== req.user.id) {
+      return res.status(403).json({
+        error: "Not your room",
+      });
+    }
+
+    if (room.patient_id && room.patient_id !== patient_id) {
+      return res.status(403).json({
+        error: "Patient does not belong to this room",
+      });
+    }
+
+    const id = uuidv4();
+
+    await db.query(
+      `
+      INSERT INTO vitals (
+        id,
         room_id,
         patient_id,
+        doctor_id,
         stage,
         temperature,
         bp_systolic,
@@ -1342,1261 +670,348 @@ app.post(
         spo2,
         heart_rate,
         dosage_given,
-        notes,
-      } = req.body;
-
-
-      if (
-        !room_id ||
-        !patient_id ||
-        !stage
-      ) {
-
-        return res.status(400).json({
-          error:
-            "Missing required fields",
-        });
-      }
-
-
-      const id =
-        uuidv4();
-
-
-      db.prepare(`
-        INSERT INTO vitals (
-          id,
-          room_id,
-          patient_id,
-          doctor_id,
-          stage,
-          temperature,
-          bp_systolic,
-          bp_diastolic,
-          sugar,
-          spo2,
-          heart_rate,
-          dosage_given,
-          notes
-        )
-
-        VALUES (
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        )
-      `).run(
-
+        notes
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+      )
+      `,
+      [
         id,
-
         room_id,
-
         patient_id,
-
         req.user.id,
-
         stage,
-
-        temperature || null,
-
-        bp_systolic || null,
-
-        bp_diastolic || null,
-
-        sugar || null,
-
-        spo2 || null,
-
-        heart_rate || null,
-
-        dosage_given || null,
-
-        notes || null
-
-      );
-
-
-      const entry =
-        db
-          .prepare(
-            "SELECT * FROM vitals WHERE id = ?"
-          )
-          .get(id);
-
-
-      io
-        .to(
-          `room:${room_id}`
-        )
-        .emit(
-          "vitals:new",
-          entry
-        );
-
-
-      res.json({
-        vitals:
-          entry,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "CREATE VITALS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to save vitals",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// ROOM VITALS
-// =========================================================
-
-app.get(
-  "/api/vitals/room/:roomId",
-  auth(),
-  (req, res) => {
-
-    try {
-
-      const rows =
-        db
-          .prepare(`
-            SELECT *
-
-            FROM vitals
-
-            WHERE
-              room_id = ?
-
-            ORDER BY
-              recorded_at ASC
-          `)
-          .all(
-            req.params.roomId
-          );
-
-
-      res.json({
-        vitals:
-          rows,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "ROOM VITALS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load vitals",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// PATIENT VITALS
-// =========================================================
-
-app.get(
-  "/api/vitals/patient/:patientId",
-  auth(),
-  (req, res) => {
-
-    try {
-
-      const rows =
-        db
-          .prepare(`
-            SELECT *
-
-            FROM vitals
-
-            WHERE
-              patient_id = ?
-
-            ORDER BY
-              recorded_at ASC
-          `)
-          .all(
-            req.params.patientId
-          );
-
-
-      res.json({
-        vitals:
-          rows,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "PATIENT VITALS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load patient vitals",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// DOCTOR PATIENT LIST
-// =========================================================
-//
-// GET /api/patients
-//
-// Returns patients who have a room/visit
-// with the logged-in doctor.
-// =========================================================
-
-app.get(
-  "/api/patients",
-  auth("doctor"),
-  (req, res) => {
-
-    try {
-
-      const patients =
-        db
-          .prepare(`
-            SELECT DISTINCT
-
-              u.id,
-
-              u.name,
-
-              u.email,
-
-              u.age,
-
-              u.gender,
-
-              u.phone,
-
-              u.medical_conditions,
-
-              u.specialization,
-
-              u.created_at
-
-            FROM users u
-
-            INNER JOIN rooms r
-              ON r.patient_id = u.id
-
-            WHERE
-              u.role = 'patient'
-
-            AND
-              r.doctor_id = ?
-
-            ORDER BY
-              u.name ASC
-          `)
-          .all(
-            req.user.id
-          );
-
-
-      const result =
-        patients.map(
-          (patient) => {
-
-            const stats =
-              db
-                .prepare(`
-                  SELECT
-
-                    COUNT(*) AS total_visits,
-
-                    SUM(
-                      CASE
-                        WHEN status = 'active'
-                        THEN 1
-                        ELSE 0
-                      END
-                    ) AS active_visits,
-
-                    SUM(
-                      CASE
-                        WHEN status = 'completed'
-                        THEN 1
-                        ELSE 0
-                      END
-                    ) AS completed_visits
-
-                  FROM rooms
-
-                  WHERE
-                    doctor_id = ?
-
-                  AND
-                    patient_id = ?
-                `)
-                .get(
-
-                  req.user.id,
-
-                  patient.id
-
-                );
-
-
-            const latestVisit =
-              db
-                .prepare(`
-                  SELECT
-
-                    id,
-
-                    code,
-
-                    title,
-
-                    status,
-
-                    created_at,
-
-                    completed_at
-
-                  FROM rooms
-
-                  WHERE
-                    doctor_id = ?
-
-                  AND
-                    patient_id = ?
-
-                  ORDER BY
-                    created_at DESC
-
-                  LIMIT 1
-                `)
-                .get(
-
-                  req.user.id,
-
-                  patient.id
-
-                );
-
-
-            return {
-
-              ...patient,
-
-              total_visits:
-                stats?.total_visits ||
-                0,
-
-              active_visits:
-                stats?.active_visits ||
-                0,
-
-              completed_visits:
-                stats?.completed_visits ||
-                0,
-
-              latest_visit:
-                latestVisit ||
-                null,
-
-            };
-          }
-        );
-
-
-      console.log(
-        `Loaded ${result.length} patients`
-      );
-
-
-      res.json({
-        patients:
-          result,
-      });
-
-    } catch (error) {
-
-      console.error(
-        "GET PATIENTS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load patients",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// SINGLE PATIENT DETAILS
-// =========================================================
-//
-// GET /api/patients/:patientId
-// =========================================================
-
-app.get(
-  "/api/patients/:patientId",
-  auth("doctor"),
-  (req, res) => {
-
-    try {
-
-      const patientId =
-        req.params.patientId;
-
-
-      // ---------------------------------------------------
-      // PATIENT
-      // ---------------------------------------------------
-
-      const patient =
-        db
-          .prepare(`
-            SELECT
-
-              id,
-
-              name,
-
-              email,
-
-              age,
-
-              gender,
-
-              phone,
-
-              medical_conditions,
-
-              specialization,
-
-              created_at
-
-            FROM users
-
-            WHERE
-              id = ?
-
-            AND
-              role = 'patient'
-          `)
-          .get(
-            patientId
-          );
-
-
-      if (!patient) {
-
-        return res.status(404).json({
-          error:
-            "Patient not found",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // VERIFY DOCTOR RELATIONSHIP
-      // ---------------------------------------------------
-
-      const relationship =
-        db
-          .prepare(`
-            SELECT id
-
-            FROM rooms
-
-            WHERE
-              doctor_id = ?
-
-            AND
-              patient_id = ?
-
-            LIMIT 1
-          `)
-          .get(
-
-            req.user.id,
-
-            patientId
-
-          );
-
-
-      if (!relationship) {
-
-        return res.status(403).json({
-          error:
-            "You do not have access to this patient",
-        });
-      }
-
-
-      // ---------------------------------------------------
-      // PATIENT VISITS
-      // ---------------------------------------------------
-
-      const visits =
-        db
-          .prepare(`
-            SELECT
-
-              id,
-
-              code,
-
-              title,
-
-              status,
-
-              created_at,
-
-              completed_at
-
-            FROM rooms
-
-            WHERE
-              doctor_id = ?
-
-            AND
-              patient_id = ?
-
-            ORDER BY
-              created_at DESC
-          `)
-          .all(
-
-            req.user.id,
-
-            patientId
-
-          );
-
-
-      // ---------------------------------------------------
-      // PATIENT VITALS
-      // ---------------------------------------------------
-
-      const vitals =
-        db
-          .prepare(`
-            SELECT
-
-              v.*
-
-            FROM vitals v
-
-            INNER JOIN rooms r
-              ON v.room_id = r.id
-
-            WHERE
-              v.patient_id = ?
-
-            AND
-              r.doctor_id = ?
-
-            ORDER BY
-              v.recorded_at DESC
-          `)
-          .all(
-
-            patientId,
-
-            req.user.id
-
-          );
-
-
-      // ---------------------------------------------------
-      // LATEST VITAL
-      // ---------------------------------------------------
-
-      const latestVitals =
-        vitals.length > 0
-          ? vitals[0]
-          : null;
-
-
-      // ---------------------------------------------------
-      // RESPONSE
-      // ---------------------------------------------------
-
-      res.json({
-
-        patient,
-
-        visits,
-
-        vitals,
-
-        latestVitals,
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "GET PATIENT DETAILS ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load patient details",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// DOCTOR DASHBOARD
-// =========================================================
-
-app.get(
-  "/api/dashboard/doctor",
-  auth("doctor"),
-  (req, res) => {
-
-    try {
-
-      const rooms =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE doctor_id = ?"
-          )
-          .all(
-            req.user.id
-          );
-
-
-      const roomIds =
-        rooms.map(
-          (room) =>
-            room.id
-        );
-
-
-      let vitals = [];
-
-
-      if (
-        roomIds.length
-      ) {
-
-        const placeholders =
-          roomIds
-            .map(
-              () => "?"
-            )
-            .join(",");
-
-
-        vitals =
-          db
-            .prepare(`
-              SELECT *
-
-              FROM vitals
-
-              WHERE
-                room_id IN (${placeholders})
-
-              ORDER BY
-                recorded_at ASC
-            `)
-            .all(
-              ...roomIds
-            );
-      }
-
-
-      const totalPatients =
-        new Set(
-
-          rooms
-            .filter(
-              (room) =>
-                room.patient_id
-            )
-            .map(
-              (room) =>
-                room.patient_id
-            )
-
-        ).size;
-
-
-      const totalVisits =
-        rooms.length;
-
-
-      const activeVisits =
-        rooms.filter(
-          (room) =>
-            room.status ===
-            "active"
-        ).length;
-
-
-      const completedVisits =
-        rooms.filter(
-          (room) =>
-            room.status ===
-            "completed"
-        ).length;
-
-
-      const avg =
-        (arr) => {
-
-          if (
-            !arr.length
-          ) {
-            return null;
-          }
-
-
-          return +(
-            arr.reduce(
-              (a, b) =>
-                a + b,
-              0
-            ) /
-            arr.length
-          ).toFixed(1);
-        };
-
-
-      const nums =
-        (field) =>
-
-          vitals
-            .map(
-              (vital) =>
-                vital[field]
-            )
-            .filter(
-              (value) =>
-                value !== null &&
-                value !== undefined
-            );
-
-
-      const summary = {
-
-        avgTemperature:
-          avg(
-            nums(
-              "temperature"
-            )
-          ),
-
-        avgSystolic:
-          avg(
-            nums(
-              "bp_systolic"
-            )
-          ),
-
-        avgDiastolic:
-          avg(
-            nums(
-              "bp_diastolic"
-            )
-          ),
-
-        avgSugar:
-          avg(
-            nums(
-              "sugar"
-            )
-          ),
-
-        avgSpo2:
-          avg(
-            nums(
-              "spo2"
-            )
-          ),
-
-        avgHeartRate:
-          avg(
-            nums(
-              "heart_rate"
-            )
-          ),
-
-      };
-
-
-      const trend =
-        vitals.map(
-          (vital) => ({
-
-            date:
-              vital.recorded_at,
-
-            temperature:
-              vital.temperature,
-
-            systolic:
-              vital.bp_systolic,
-
-            diastolic:
-              vital.bp_diastolic,
-
-            sugar:
-              vital.sugar,
-
-            spo2:
-              vital.spo2,
-
-            heart_rate:
-              vital.heart_rate,
-
-            stage:
-              vital.stage,
-
-            patient_id:
-              vital.patient_id,
-
-          })
-        );
-
-
-      const statusBreakdown = [
-
-        {
-
-          name:
-            "Open",
-
-          value:
-            rooms.filter(
-              (room) =>
-                room.status ===
-                "open"
-            ).length,
-
-        },
-
-        {
-
-          name:
-            "Active",
-
-          value:
-            activeVisits,
-
-        },
-
-        {
-
-          name:
-            "Completed",
-
-          value:
-            completedVisits,
-
-        },
-
-      ];
-
-
-      res.json({
-
-        totalPatients,
-
-        totalVisits,
-
-        activeVisits,
-
-        completedVisits,
-
-        summary,
-
-        trend,
-
-        statusBreakdown,
-
-        rooms,
-
-        vitals,
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "DOCTOR DASHBOARD ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load doctor dashboard",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// PATIENT DASHBOARD
-// =========================================================
-
-app.get(
-  "/api/dashboard/patient",
-  auth("patient"),
-  (req, res) => {
-
-    try {
-
-      const rooms =
-        db
-          .prepare(
-            "SELECT * FROM rooms WHERE patient_id = ?"
-          )
-          .all(
-            req.user.id
-          );
-
-
-      const vitals =
-        db
-          .prepare(`
-            SELECT *
-
-            FROM vitals
-
-            WHERE
-              patient_id = ?
-
-            ORDER BY
-              recorded_at ASC
-          `)
-          .all(
-            req.user.id
-          );
-
-
-      res.json({
-
-        rooms,
-
-        vitals,
-
-      });
-
-    } catch (error) {
-
-      console.error(
-        "PATIENT DASHBOARD ERROR:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to load patient dashboard",
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// SOCKET.IO
-// =========================================================
-
-io.on(
-  "connection",
-  (socket) => {
-
-    // -----------------------------------------------------
-    // ROOM JOIN
-    // -----------------------------------------------------
-
-    socket.on(
-      "room:join",
-      ({
-        roomCode,
-        userId,
-        userName,
-        role,
-      }) => {
-
-        const roomKey =
-          `room:${roomCode}`;
-
-
-        socket.join(
-          roomKey
-        );
-
-
-        socket.data = {
-
-          roomCode,
-
-          userId,
-
-          userName,
-
-          role,
-
-        };
-
-
-        socket
-          .to(roomKey)
-          .emit(
-            "peer:joined",
-            {
-
-              userId,
-
-              userName,
-
-              role,
-
-              socketId:
-                socket.id,
-
-            }
-          );
-      }
+        temperature ?? null,
+        bp_systolic ?? null,
+        bp_diastolic ?? null,
+        sugar ?? null,
+        spo2 ?? null,
+        heart_rate ?? null,
+        dosage_given ?? null,
+        notes ?? null,
+      ],
     );
 
+    const result = await db.query("SELECT * FROM vitals WHERE id = $1", [id]);
 
-    // -----------------------------------------------------
-    // OFFER
-    // -----------------------------------------------------
+    const entry = result.rows[0];
 
-    socket.on(
-      "webrtc:offer",
-      ({
-        roomCode,
-        offer,
-        to,
-      }) => {
+    io.to(`room:${room_id}`).emit("vitals:new", entry);
 
-        io
-          .to(to)
-          .emit(
-            "webrtc:offer",
-            {
-
-              offer,
-
-              from:
-                socket.id,
-
-              userName:
-                socket.data
-                  ?.userName,
-
-            }
-          );
-      }
-    );
-
-
-    // -----------------------------------------------------
-    // ANSWER
-    // -----------------------------------------------------
-
-    socket.on(
-      "webrtc:answer",
-      ({
-        answer,
-        to,
-      }) => {
-
-        io
-          .to(to)
-          .emit(
-            "webrtc:answer",
-            {
-
-              answer,
-
-              from:
-                socket.id,
-
-            }
-          );
-      }
-    );
-
-
-    // -----------------------------------------------------
-    // ICE
-    // -----------------------------------------------------
-
-    socket.on(
-      "webrtc:ice-candidate",
-      ({
-        candidate,
-        to,
-      }) => {
-
-        io
-          .to(to)
-          .emit(
-            "webrtc:ice-candidate",
-            {
-
-              candidate,
-
-              from:
-                socket.id,
-
-            }
-          );
-      }
-    );
-
-
-    // -----------------------------------------------------
-    // LEAVE
-    // -----------------------------------------------------
-
-    socket.on(
-      "room:leave",
-      ({
-        roomCode,
-      }) => {
-
-        socket.leave(
-          `room:${roomCode}`
-        );
-
-
-        socket
-          .to(
-            `room:${roomCode}`
-          )
-          .emit(
-            "peer:left",
-            {
-              socketId:
-                socket.id,
-            }
-          );
-      }
-    );
-
-
-    // -----------------------------------------------------
-    // DISCONNECT
-    // -----------------------------------------------------
-
-    socket.on(
-      "disconnect",
-      () => {
-
-        if (
-          socket.data
-            ?.roomCode
-        ) {
-
-          socket
-            .to(
-              `room:${socket.data.roomCode}`
-            )
-            .emit(
-              "peer:left",
-              {
-                socketId:
-                  socket.id,
-              }
-            );
-        }
-      }
-    );
-
-  }
-);
-
-
-// =========================================================
-// API 404 HANDLER
-// =========================================================
-//
-// IMPORTANT:
-// This catches unknown API routes as JSON instead of
-// trying to load client/dist/index.html.
-// =========================================================
-
-app.use(
-  "/api",
-  (req, res) => {
-
-    res.status(404).json({
-
-      error:
-        `API route not found: ${req.method} ${req.originalUrl}`,
-
+    res.json({
+      vitals: entry,
     });
+  } catch (error) {
+    console.error("Create vitals error:", error);
 
+    res.status(500).json({
+      error: "Failed to save vitals",
+    });
   }
-);
+});
 
+app.get("/api/vitals/room/:roomId", auth(), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+        SELECT *
+        FROM vitals
+        WHERE room_id = $1
+        ORDER BY recorded_at ASC
+        `,
+      [req.params.roomId],
+    );
 
-// =========================================================
+    res.json({
+      vitals: result.rows,
+    });
+  } catch (error) {
+    console.error("Room vitals error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch vitals",
+    });
+  }
+});
+
+app.get("/api/vitals/patient/:patientId", auth(), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+        SELECT *
+        FROM vitals
+        WHERE patient_id = $1
+        ORDER BY recorded_at ASC
+        `,
+      [req.params.patientId],
+    );
+
+    res.json({
+      vitals: result.rows,
+    });
+  } catch (error) {
+    console.error("Patient vitals error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch vitals",
+    });
+  }
+});
+
+// ============================================================
+// DOCTOR DASHBOARD ANALYTICS
+// ============================================================
+
+app.get("/api/dashboard/doctor", auth("doctor"), async (req, res) => {
+  try {
+    const roomsResult = await db.query(
+      `
+        SELECT *
+        FROM rooms
+        WHERE doctor_id = $1
+        ORDER BY created_at DESC
+        `,
+      [req.user.id],
+    );
+
+    const rooms = roomsResult.rows;
+
+    let vitals = [];
+
+    const roomIds = rooms.map((room) => room.id);
+
+    if (roomIds.length > 0) {
+      const vitalsResult = await db.query(
+        `
+          SELECT *
+          FROM vitals
+          WHERE room_id = ANY($1::text[])
+          ORDER BY recorded_at ASC
+          `,
+        [roomIds],
+      );
+
+      vitals = vitalsResult.rows;
+    }
+
+    const totalPatients = new Set(
+      rooms.filter((room) => room.patient_id).map((room) => room.patient_id),
+    ).size;
+
+    const totalVisits = rooms.length;
+
+    const activeVisits = rooms.filter(
+      (room) => room.status === "active",
+    ).length;
+
+    const completedVisits = rooms.filter(
+      (room) => room.status === "completed",
+    ).length;
+
+    const avg = (arr) =>
+      arr.length
+        ? +(
+            arr.reduce((sum, value) => sum + Number(value), 0) / arr.length
+          ).toFixed(1)
+        : null;
+
+    const nums = (field) =>
+      vitals
+        .map((vital) => vital[field])
+        .filter((value) => value !== null && value !== undefined);
+
+    const summary = {
+      avgTemperature: avg(nums("temperature")),
+      avgSystolic: avg(nums("bp_systolic")),
+      avgDiastolic: avg(nums("bp_diastolic")),
+      avgSugar: avg(nums("sugar")),
+      avgSpo2: avg(nums("spo2")),
+      avgHeartRate: avg(nums("heart_rate")),
+    };
+
+    const trend = vitals.map((vital) => ({
+      date: vital.recorded_at,
+      temperature: vital.temperature,
+      systolic: vital.bp_systolic,
+      diastolic: vital.bp_diastolic,
+      sugar: vital.sugar,
+      spo2: vital.spo2,
+      heart_rate: vital.heart_rate,
+      stage: vital.stage,
+      patient_id: vital.patient_id,
+    }));
+
+    const statusBreakdown = [
+      {
+        name: "Open",
+        value: rooms.filter((room) => room.status === "open").length,
+      },
+      {
+        name: "Active",
+        value: activeVisits,
+      },
+      {
+        name: "Completed",
+        value: completedVisits,
+      },
+    ];
+
+    res.json({
+      totalPatients,
+      totalVisits,
+      activeVisits,
+      completedVisits,
+      summary,
+      trend,
+      statusBreakdown,
+      rooms,
+      vitals,
+    });
+  } catch (error) {
+    console.error("Doctor dashboard error:", error);
+
+    res.status(500).json({
+      error: "Failed to load doctor dashboard",
+    });
+  }
+});
+
+app.get("/api/dashboard/patient", auth("patient"), async (req, res) => {
+  try {
+    const roomsResult = await db.query(
+      `
+        SELECT *
+        FROM rooms
+        WHERE patient_id = $1
+        ORDER BY created_at DESC
+        `,
+      [req.user.id],
+    );
+
+    const vitalsResult = await db.query(
+      `
+        SELECT *
+        FROM vitals
+        WHERE patient_id = $1
+        ORDER BY recorded_at ASC
+        `,
+      [req.user.id],
+    );
+
+    res.json({
+      rooms: roomsResult.rows,
+      vitals: vitalsResult.rows,
+    });
+  } catch (error) {
+    console.error("Patient dashboard error:", error);
+
+    res.status(500).json({
+      error: "Failed to load patient dashboard",
+    });
+  }
+});
+
+// ============================================================
+// SOCKET.IO SIGNALING / WEBRTC
+// ============================================================
+
+io.on("connection", (socket) => {
+  console.log(`Socket connected: ${socket.id}`);
+
+  socket.on("room:join", ({ roomCode, userId, userName, role }) => {
+    if (!roomCode) return;
+
+    const roomKey = `room:${roomCode}`;
+
+    socket.join(roomKey);
+
+    socket.data = {
+      roomCode,
+      userId,
+      userName,
+      role,
+    };
+
+    socket.to(roomKey).emit("peer:joined", {
+      userId,
+      userName,
+      role,
+      socketId: socket.id,
+    });
+  });
+
+  socket.on("webrtc:offer", ({ roomCode, offer, to }) => {
+    if (!to || !offer) return;
+
+    io.to(to).emit("webrtc:offer", {
+      offer,
+      from: socket.id,
+      userName: socket.data?.userName,
+    });
+  });
+
+  socket.on("webrtc:answer", ({ answer, to }) => {
+    if (!to || !answer) return;
+
+    io.to(to).emit("webrtc:answer", {
+      answer,
+      from: socket.id,
+    });
+  });
+
+  socket.on("webrtc:ice-candidate", ({ candidate, to }) => {
+    if (!to || !candidate) return;
+
+    io.to(to).emit("webrtc:ice-candidate", {
+      candidate,
+      from: socket.id,
+    });
+  });
+
+  socket.on("room:leave", ({ roomCode }) => {
+    if (!roomCode) return;
+
+    const roomKey = `room:${roomCode}`;
+
+    socket.leave(roomKey);
+
+    socket.to(roomKey).emit("peer:left", {
+      socketId: socket.id,
+    });
+  });
+
+  socket.on("disconnect", () => {
+    console.log(`Socket disconnected: ${socket.id}`);
+
+    if (socket.data?.roomCode) {
+      socket.to(`room:${socket.data.roomCode}`).emit("peer:left", {
+        socketId: socket.id,
+      });
+    }
+  });
+});
+
+// ============================================================
+// SERVE CLIENT IN PRODUCTION
+// ============================================================
+
+const clientDist = path.join(__dirname, "..", "client", "dist");
+
+app.use(express.static(clientDist));
+
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    return next();
+  }
+
+  res.sendFile(path.join(clientDist, "index.html"));
+});
+
+// ============================================================
 // START SERVER
-// =========================================================
+// ============================================================
 
-server.listen(
-  PORT,
-  () => {
-
-    console.log(
-      "======================================"
-    );
-
-    console.log(
-      `CareThread server running on port ${PORT}`
-    );
-
-    console.log(
-      `API: http://localhost:${PORT}/api/health`
-    );
-
-    console.log(
-      "======================================"
-    );
-
-  }
-);
+server.listen(PORT, () => {
+  console.log(`CareThread server running on port ${PORT}`);
+});
