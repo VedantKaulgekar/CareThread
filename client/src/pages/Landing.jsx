@@ -1,7 +1,10 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../AuthContext.jsx';
 
 export default function Landing() {
+  const { user } = useAuth();
+
   return (
     <div>
       <nav className="nav">
@@ -12,13 +15,21 @@ export default function Landing() {
           </div>
 
           <div className="flex gap-12">
-            <Link to="/login" className="btn btn-ghost">
-              Sign in
-            </Link>
+            {user ? (
+              <Link to={user.role === 'doctor' ? '/doctor' : '/patient'} className="btn btn-primary">
+                Go to dashboard
+              </Link>
+            ) : (
+              <>
+                <Link to="/login" className="btn btn-ghost">
+                  Sign in
+                </Link>
 
-            <Link to="/signup?role=patient" className="btn btn-primary">
-              Get started
-            </Link>
+                <Link to="/signup?role=patient" className="btn btn-primary">
+                  Get started
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </nav>

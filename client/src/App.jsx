@@ -6,109 +6,85 @@ import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
 import Signup from './pages/Signup.jsx';
 
-import DoctorDashboard from './pages/DoctorDashboard.jsx';
-import PatientDashboard from './pages/PatientDashboard.jsx';
+import DoctorWorkspaces from './pages/DoctorWorkspaces.jsx';
+import WorkspaceDetail from './pages/WorkspaceDetail.jsx';
+
+import PatientWorkspaces from './pages/PatientWorkspaces.jsx';
+import PatientWorkspaceView from './pages/PatientWorkspaceView.jsx';
+
 import VisitRoom from './pages/VisitRoom.jsx';
-
-import Workspaces from './pages/Workspaces.jsx';
-import Patients from './pages/Patients.jsx';
-import Profile from './pages/Profile.jsx';
-
 import Settings from './pages/Settings.jsx';
-
 
 function Protected({ role, children }) {
   const { user } = useAuth();
-
-  if (!user) {
-    return (
-      <Navigate
-        to="/login"
-        replace
-      />
-    );
-  }
-
+  if (!user) return <Navigate to="/login" replace />;
   if (role && user.role !== role) {
-    return (
-      <Navigate
-        to={
-          user.role === 'doctor'
-            ? '/doctor'
-            : '/patient'
-        }
-        replace
-      />
-    );
+    return <Navigate to={user.role === 'doctor' ? '/doctor' : '/patient'} replace />;
   }
-
   return children;
 }
 
+// A logged-in user should never see the login/signup forms again —
+// send them straight to their dashboard instead.
+function GuestOnly({ children }) {
+  const { user } = useAuth();
+  if (user) return <Navigate to={user.role === 'doctor' ? '/doctor' : '/patient'} replace />;
+  return children;
+}
 
 export default function App() {
   return (
     <Routes>
+      <Route path="/" element={<Landing />} />
 
-      {/* Landing */}
-      <Route
-        path="/"
-        element={<Landing />}
-      />
+      <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
+      <Route path="/signup" element={<GuestOnly><Signup /></GuestOnly>} />
 
-      {/* Login */}
-      <Route
-        path="/login"
-        element={<Login />}
-      />
-
-      {/* Signup */}
-      <Route
-        path="/signup"
-        element={<Signup />}
-      />
-
-      {/* Doctor Dashboard */}
+      {/* Doctor */}
       <Route
         path="/doctor"
         element={
           <Protected role="doctor">
-            <DoctorDashboard />
+            <DoctorWorkspaces />
           </Protected>
         }
       />
-
-      {/* Workspaces */}
       <Route
-        path="/workspaces"
+        path="/doctor/workspaces/:workspaceId"
         element={
           <Protected role="doctor">
-            <Workspaces />
+            <WorkspaceDetail />
           </Protected>
         }
       />
 
-      {/* Patients */}
+      {/* Patient */}
       <Route
-        path="/patients"
+        path="/patient"
         element={
-          <Protected role="doctor">
-            <Patients />
+          <Protected role="patient">
+            <PatientWorkspaces />
           </Protected>
         }
       />
-
-      {/* Profile */}
       <Route
-        path="/profile"
+        path="/patient/workspaces/:workspaceId"
         element={
-          <Protected role="doctor">
-            <Profile />
+          <Protected role="patient">
+            <PatientWorkspaceView />
           </Protected>
         }
       />
 
-      {/* Settings */}
+      {/* Shared */}
+      <Route
+        path="/room/:code"
+        element={
+          <Protected>
+            <VisitRoom />
+          </Protected>
+        }
+      />
       <Route
         path="/settings"
         element={
@@ -118,37 +94,7 @@ export default function App() {
         }
       />
 
-      {/* Patient Dashboard */}
-      <Route
-        path="/patient"
-        element={
-          <Protected role="patient">
-            <PatientDashboard />
-          </Protected>
-        }
-      />
-
-      {/* Visit Room */}
-      <Route
-        path="/room/:code"
-        element={
-          <Protected>
-            <VisitRoom />
-          </Protected>
-        }
-      />
-
-      {/* Unknown */}
-      <Route
-        path="*"
-        element={
-          <Navigate
-            to="/"
-            replace
-          />
-        }
-      />
-
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

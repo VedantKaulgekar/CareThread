@@ -8,8 +8,6 @@ import {
 
 import { api, useAuth } from "../AuthContext.jsx";
 
-import DashboardNav from "../components/DashboardNav.jsx";
-
 import { MdMedicalServices } from "react-icons/md";
 import { FaHospitalUser } from "react-icons/fa6";
 
@@ -280,8 +278,6 @@ export default function Signup() {
 
   return (
     <>
-      <DashboardNav />
-
       <div style={wrap}>
         <div className="card" style={panel}>
 

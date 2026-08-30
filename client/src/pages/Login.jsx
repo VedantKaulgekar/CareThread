@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, useAuth } from "../AuthContext.jsx";
-import DashboardNav from "../components/DashboardNav.jsx";
 import { MdMedicalServices } from 'react-icons/md';
 import { FaHospitalUser } from 'react-icons/fa6';
 
@@ -35,7 +34,6 @@ export default function Login() {
 
   return (
     <>
-      <DashboardNav />
       <div style={wrap}>
         <div className="card" style={panel}>
           <Link
