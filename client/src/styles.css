@@ -230,3 +230,39 @@ input, select, textarea {
   font-size: 14px;
   margin-bottom: 16px;
 }
+/* ---------- Analytics (new) ---------- */
+.analytics-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.analytics-main-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+.analytics-main-grid-even {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+.analytics-workload-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .analytics-stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .analytics-main-grid, .analytics-main-grid-even { grid-template-columns: 1fr; }
+  .analytics-workload-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 480px) {
+  .analytics-stats-grid, .analytics-workload-grid { grid-template-columns: 1fr; }
+}

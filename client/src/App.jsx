@@ -12,6 +12,9 @@ import WorkspaceDetail from './pages/WorkspaceDetail.jsx';
 import PatientWorkspaces from './pages/PatientWorkspaces.jsx';
 import PatientWorkspaceView from './pages/PatientWorkspaceView.jsx';
 
+import PatientAnalyticsDashboard from './pages/PatientAnalyticsDashboard.jsx';
+import DoctorAnalyticsDashboard from './pages/DoctorAnalyticsDashboard.jsx';
+
 import VisitRoom from './pages/VisitRoom.jsx';
 import Settings from './pages/Settings.jsx';
 
@@ -57,6 +60,14 @@ export default function App() {
           </Protected>
         }
       />
+      <Route
+        path="/doctor/analytics"
+        element={
+          <Protected role="doctor">
+            <DoctorAnalyticsDashboard />
+          </Protected>
+        }
+      />
 
       {/* Patient */}
       <Route
@@ -72,6 +83,14 @@ export default function App() {
         element={
           <Protected role="patient">
             <PatientWorkspaceView />
+          </Protected>
+        }
+      />
+      <Route
+        path="/patient/analytics"
+        element={
+          <Protected role="patient">
+            <PatientAnalyticsDashboard />
           </Protected>
         }
       />

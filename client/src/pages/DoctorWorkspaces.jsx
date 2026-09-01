@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api, useAuth } from '../AuthContext.jsx';
 import DashboardNav from '../components/DashboardNav.jsx';
 import DrugLookupCard from '../components/DrugLookupCard.jsx';
@@ -56,9 +56,12 @@ export default function DoctorWorkspaces() {
             <h1 style={{ fontSize: 28 }}>Your workspaces</h1>
             <p className="text-muted mt-8">One workspace per drug — patients enroll with a join code, then attend scheduled visits inside it.</p>
           </div>
-          <button className="btn btn-primary" onClick={() => setShowCreate(s => !s)}>
-            {showCreate ? 'Cancel' : '+ New workspace'}
-          </button>
+          <div className="flex gap-8">
+            <Link to="/doctor/analytics" className="btn btn-secondary">View analytics</Link>
+            <button className="btn btn-primary" onClick={() => setShowCreate(s => !s)}>
+              {showCreate ? 'Cancel' : '+ New workspace'}
+            </button>
+          </div>
         </div>
 
         {justCreated && !showCreate && (
