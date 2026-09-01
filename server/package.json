@@ -7,11 +7,14 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",
+    "dicom-parser": "^1.8.21",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "groq-sdk": "^1.6.0",
+    "healthcare-mcp": "^2.1.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.23.0",
     "socket.io": "^4.7.5",

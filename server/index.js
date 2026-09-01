@@ -10,6 +10,9 @@ const { v4: uuidv4 } = require("uuid");
 const { Server } = require("socket.io");
 
 const db = require("./db");
+const healthcareMcp = require("./mcp/healthcareClient");
+const groqClient = require("./ai/groqClient");
+const handoffAgent = require("./ai/handoffAgent");
 
 const app = express();
 
@@ -204,9 +207,81 @@ app.get(
 
 /*
 |--------------------------------------------------------------------------
-| AUTH
+| MCP: HEALTHCARE DATA (drug lookup, ICD-10, clinical trials)
 |--------------------------------------------------------------------------
+| Backed by the public `healthcare-mcp` server over stdio — no API key,
+| no account. Free openFDA / ClinicalTrials.gov / NCBI data via real MCP.
 */
+
+app.get(
+  "/api/mcp/drug-lookup",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const drugName = (req.query.name || "").trim();
+      if (!drugName) {
+        return res.status(400).json({ error: "A drug name is required" });
+      }
+
+      const result = await healthcareMcp.lookupDrug(drugName);
+      res.json({ result });
+    } catch (error) {
+      console.error("MCP drug lookup error:", error);
+      res.status(502).json({
+        error: "Drug lookup is temporarily unavailable",
+        detail: error.message,
+      });
+    }
+  }
+);
+
+app.get(
+  "/api/mcp/clinical-trials",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const condition = (req.query.condition || "").trim();
+      if (!condition) {
+        return res.status(400).json({ error: "A condition is required" });
+      }
+
+      const result = await healthcareMcp.searchClinicalTrials(condition, {
+        maxResults: 5,
+      });
+      res.json({ result });
+    } catch (error) {
+      console.error("MCP clinical trials search error:", error);
+      res.status(502).json({
+        error: "Clinical trials search is temporarily unavailable",
+        detail: error.message,
+      });
+    }
+  }
+);
+
+app.get(
+  "/api/mcp/icd-lookup",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const query = (req.query.q || "").trim();
+      if (!query) {
+        return res.status(400).json({ error: "A search term is required" });
+      }
+
+      const result = await healthcareMcp.lookupIcdCode(query);
+      res.json({ result });
+    } catch (error) {
+      console.error("MCP ICD lookup error:", error);
+      res.status(502).json({
+        error: "ICD lookup is temporarily unavailable",
+        detail: error.message,
+      });
+    }
+  }
+);
+
+
 
 /*
 |--------------------------------------------------------------------------
@@ -1089,19 +1164,50 @@ app.get("/api/visits/by-code/:code", auth(), async (req, res) => {
 app.post("/api/visits/by-code/:code/complete", auth("doctor"), async (req, res) => {
   try {
     const code = req.params.code.toUpperCase();
-    const result = await db.query("SELECT * FROM scheduled_visits WHERE room_code = $1", [code]);
+    const result = await db.query(
+      `
+      SELECT sv.*, w.title AS workspace_title, w.drug_name
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      WHERE sv.room_code = $1
+      `,
+      [code],
+    );
     const visit = result.rows[0];
     if (!visit || visit.doctor_id !== req.user.id) {
       return res.status(404).json({ error: "Visit not found" });
     }
 
+    // Generate the after-visit summary before marking complete, so the
+    // patient has it the moment the visit closes. Never blocks completion
+    // if the AI call fails (e.g. no GROQ_API_KEY set) — the visit still
+    // completes, just without a summary.
+    let summary = null;
+    try {
+      const vitalsResult = await db.query(
+        `SELECT * FROM vitals WHERE scheduled_visit_id = $1 ORDER BY stage ASC`,
+        [visit.id],
+      );
+      summary = await handoffAgent.generateVisitSummary({
+        workspaceTitle: visit.workspace_title,
+        drugName: visit.drug_name,
+        vitalsRows: vitalsResult.rows,
+      });
+    } catch (aiError) {
+      console.warn("Visit summary generation skipped:", aiError.message);
+    }
+
     await db.query(
-      `UPDATE scheduled_visits SET status = 'completed', completed_at = NOW() WHERE id = $1`,
-      [visit.id],
+      `
+      UPDATE scheduled_visits
+      SET status = 'completed', completed_at = NOW(), ai_summary = $1, ai_summary_generated_at = $2
+      WHERE id = $3
+      `,
+      [summary, summary ? new Date().toISOString() : null, visit.id],
     );
 
-    io.to(`room:${code}`).emit("room:completed");
-    res.json({ ok: true });
+    io.to(`room:${code}`).emit("room:completed", { summary });
+    res.json({ ok: true, summary });
   } catch (error) {
     console.error("Complete visit error:", error);
     res.status(500).json({ error: "Failed to complete visit" });

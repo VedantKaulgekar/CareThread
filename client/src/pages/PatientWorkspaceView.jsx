@@ -109,13 +109,7 @@ export default function PatientWorkspaceView() {
           <div className="flex-col gap-10">
             {[...upcoming, ...past].length === 0 && <p className="text-muted text-sm">No visits yet.</p>}
             {[...upcoming, ...past].map(v => (
-              <div key={v.id} style={rowStyle}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14.5 }}>{v.title || 'Trial Visit'}</div>
-                  <div className="text-muted text-sm">{new Date(v.scheduled_at).toLocaleString()}</div>
-                </div>
-                <span className={`badge ${STATUS_CLASS[v.status]}`}><span className="badge-dot" />{v.status}</span>
-              </div>
+              <VisitHistoryRow key={v.id} v={v} />
             ))}
           </div>
         </div>
@@ -124,4 +118,40 @@ export default function PatientWorkspaceView() {
   );
 }
 
+function VisitHistoryRow({ v }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasSummary = v.status === 'completed' && v.ai_summary;
+
+  return (
+    <div style={{ borderBottom: '1px solid var(--line-soft)' }}>
+      <div
+        style={{ ...rowStyle, borderBottom: 'none', cursor: hasSummary ? 'pointer' : 'default' }}
+        onClick={() => hasSummary && setExpanded(e => !e)}
+      >
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14.5 }}>{v.title || 'Trial Visit'}</div>
+          <div className="text-muted text-sm">{new Date(v.scheduled_at).toLocaleString()}</div>
+        </div>
+        <div className="flex items-center gap-8">
+          {hasSummary && (
+            <span className="text-sm" style={{ color: 'var(--purple)', fontWeight: 600 }}>
+              {expanded ? 'Hide summary ▲' : 'View summary ▼'}
+            </span>
+          )}
+          <span className={`badge ${STATUS_CLASS[v.status]}`}><span className="badge-dot" />{v.status}</span>
+        </div>
+      </div>
+      {hasSummary && expanded && (
+        <div style={summaryBox}>
+          <div className="text-sm" style={{ fontWeight: 700, marginBottom: 4, color: 'var(--purple)' }}>
+            After-visit summary
+          </div>
+          <p style={{ fontSize: 13.5, lineHeight: 1.6, margin: 0 }}>{v.ai_summary}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 4px', borderBottom: '1px solid var(--line-soft)' };
+const summaryBox = { padding: '12px 14px 16px', background: 'var(--purple-light)', borderRadius: 10, margin: '0 0 10px' };

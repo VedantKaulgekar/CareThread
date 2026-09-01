@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, useAuth } from '../AuthContext.jsx';
 import DashboardNav from '../components/DashboardNav.jsx';
+import DrugLookupCard from '../components/DrugLookupCard.jsx';
 
 export default function DoctorWorkspaces() {
   const { token } = useAuth();
@@ -83,6 +84,7 @@ export default function DoctorWorkspaces() {
                 <div className="field">
                   <label>Drug name</label>
                   <input required value={form.drug_name} onChange={e => setForm(f => ({ ...f, drug_name: e.target.value }))} placeholder="e.g. Drug X" />
+                  <DrugLookupCard drugName={form.drug_name} />
                 </div>
                 <div className="field">
                   <label>Workspace title</label>
