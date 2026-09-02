@@ -13,8 +13,11 @@ export default function DoctorVitalsForm({ scheduledVisitId, onSaved }) {
     setForm(f => ({ ...f, [field]: value }));
   }
 
+  const hasContent = form.dosage_given.trim() !== '' || form.doctor_notes.trim() !== '';
+
   async function handleSubmit(e) {
     e.preventDefault();
+    if (!hasContent) return;
     setSaving(true);
     setSavedMsg('');
     try {
@@ -62,9 +65,14 @@ export default function DoctorVitalsForm({ scheduledVisitId, onSaved }) {
         <textarea rows={3} value={form.doctor_notes} onChange={e => update('doctor_notes', e.target.value)} placeholder="Any observations from the visit…" />
       </div>
 
-      <button className="btn btn-primary btn-block" disabled={saving}>
+      <button className="btn btn-primary btn-block" disabled={saving || !hasContent}>
         {saving ? 'Saving…' : 'Save to visit record'}
       </button>
+      {!hasContent && (
+        <p className="text-muted text-sm" style={{ marginTop: 8, textAlign: 'center' }}>
+          Enter dosage or notes before saving.
+        </p>
+      )}
       {savedMsg && <p style={{ color: 'var(--teal)', fontSize: 13, marginTop: 8, textAlign: 'center', fontWeight: 600 }}>{savedMsg}</p>}
     </form>
   );

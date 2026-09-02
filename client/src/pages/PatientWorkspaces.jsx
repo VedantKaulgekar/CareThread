@@ -55,6 +55,7 @@ export default function PatientWorkspaces() {
           {error && <div className="error-box">{error}</div>}
           <form onSubmit={handleJoin} className="flex gap-8">
             <input
+              required
               style={{ flex: 1, padding: '11px 14px', borderRadius: 9, border: '1.5px solid var(--line)', fontFamily: 'monospace', letterSpacing: 2, textTransform: 'uppercase' }}
               placeholder="ABC123"
               maxLength={6}

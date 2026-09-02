@@ -10,9 +10,16 @@ const { v4: uuidv4 } = require("uuid");
 const { Server } = require("socket.io");
 
 const db = require("./db");
-const healthcareMcp = require("./mcp/healthcareClient");
 const groqClient = require("./ai/groqClient");
 const handoffAgent = require("./ai/handoffAgent");
+const anomalyAgent = require("./ai/anomalyAgent");
+const checklistAgent = require("./ai/checklistAgent");
+const intakeAgent = require("./ai/intakeAgent");
+const emailClient = require("./notifications/emailClient");
+const visitScheduledEmail = require("./notifications/visitScheduledEmail");
+const { streamVisitReport } = require("./reports/visitReportPdf");
+const chatAgent = require("./ai/chatAgent");
+const visitAlertingJob = require("./jobs/visitAlerting");
 
 const app = express();
 
@@ -36,12 +43,27 @@ const io = new Server(server, {
 |--------------------------------------------------------------------------
 */
 
-const JWT_SECRET =
-  process.env.JWT_SECRET ||
-  "carethread_hackathon_secret_key_change_in_prod";
+const crypto = require("crypto");
 
-const PORT =
-  process.env.PORT || 4000;
+// If JWT_SECRET isn't pinned in .env, generate a fresh random one on every
+// boot. This is deliberate: it means restarting the server invalidates every
+// previously-issued token, logging everyone out — which is what you want
+// during dev/demo. If you ever want sessions to survive a restart, set a
+// fixed JWT_SECRET in server/.env instead.
+const JWT_SECRET =
+  process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+if (!process.env.JWT_SECRET) {
+  console.log(
+    "[auth] No JWT_SECRET set in .env — using a fresh random secret for this run, so all sessions will be invalidated on restart.",
+  );
+}
+
+const PORT = process.env.PORT || 4000;
+
+// Used to build absolute links (e.g. the "join your visit" link in emails).
+// Set APP_URL in server/.env once you have a real deployed URL; falls back
+// to localhost for local dev.
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 
 /*
 |--------------------------------------------------------------------------
@@ -61,8 +83,7 @@ app.use(express.json());
 
 function auth(requiredRole) {
   return (req, res, next) => {
-    const header =
-      req.headers.authorization;
+    const header = req.headers.authorization;
 
     if (!header) {
       return res.status(401).json({
@@ -70,30 +91,20 @@ function auth(requiredRole) {
       });
     }
 
-    const token =
-      header.split(" ")[1];
+    const token = header.split(" ")[1];
 
     if (!token) {
       return res.status(401).json({
-        error:
-          "Invalid authorization header",
+        error: "Invalid authorization header",
       });
     }
 
     try {
-      const decoded =
-        jwt.verify(
-          token,
-          JWT_SECRET
-        );
+      const decoded = jwt.verify(token, JWT_SECRET);
 
-      if (
-        requiredRole &&
-        decoded.role !== requiredRole
-      ) {
+      if (requiredRole && decoded.role !== requiredRole) {
         return res.status(403).json({
-          error:
-            `Requires ${requiredRole} role`,
+          error: `Requires ${requiredRole} role`,
         });
       }
 
@@ -101,14 +112,10 @@ function auth(requiredRole) {
 
       next();
     } catch (error) {
-      console.error(
-        "Authentication error:",
-        error.message
-      );
+      console.error("Authentication error:", error.message);
 
       return res.status(401).json({
-        error:
-          "Invalid or expired token",
+        error: "Invalid or expired token",
       });
     }
   };
@@ -121,19 +128,12 @@ function auth(requiredRole) {
 */
 
 function genRoomCode() {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
   let code = "";
 
   for (let i = 0; i < 6; i++) {
-    code +=
-      chars[
-        Math.floor(
-          Math.random() *
-            chars.length
-        )
-      ];
+    code += chars[Math.floor(Math.random() * chars.length)];
   }
 
   return code;
@@ -150,7 +150,7 @@ function signToken(user) {
     JWT_SECRET,
     {
       expiresIn: "7d",
-    }
+    },
   );
 }
 
@@ -159,10 +159,7 @@ function publicUser(user) {
     return null;
   }
 
-  const {
-    password_hash,
-    ...rest
-  } = user;
+  const { password_hash, ...rest } = user;
 
   return rest;
 }
@@ -173,115 +170,25 @@ function publicUser(user) {
 |--------------------------------------------------------------------------
 */
 
-app.get(
-  "/api/health",
-  async (req, res) => {
-    try {
-      const result =
-        await db.query(
-          "SELECT NOW() AS now"
-        );
+app.get("/api/health", async (req, res) => {
+  try {
+    const result = await db.query("SELECT NOW() AS now");
 
-      res.json({
-        ok: true,
-        database: "connected",
-        time:
-          result.rows[0].now,
-      });
-    } catch (error) {
-      console.error(
-        "Health check error:",
-        error
-      );
+    res.json({
+      ok: true,
+      database: "connected",
+      time: result.rows[0].now,
+    });
+  } catch (error) {
+    console.error("Health check error:", error);
 
-      res.status(500).json({
-        ok: false,
-        database:
-          "disconnected",
-        error:
-          error.message,
-      });
-    }
+    res.status(500).json({
+      ok: false,
+      database: "disconnected",
+      error: error.message,
+    });
   }
-);
-
-/*
-|--------------------------------------------------------------------------
-| MCP: HEALTHCARE DATA (drug lookup, ICD-10, clinical trials)
-|--------------------------------------------------------------------------
-| Backed by the public `healthcare-mcp` server over stdio — no API key,
-| no account. Free openFDA / ClinicalTrials.gov / NCBI data via real MCP.
-*/
-
-app.get(
-  "/api/mcp/drug-lookup",
-  auth("doctor"),
-  async (req, res) => {
-    try {
-      const drugName = (req.query.name || "").trim();
-      if (!drugName) {
-        return res.status(400).json({ error: "A drug name is required" });
-      }
-
-      const result = await healthcareMcp.lookupDrug(drugName);
-      res.json({ result });
-    } catch (error) {
-      console.error("MCP drug lookup error:", error);
-      res.status(502).json({
-        error: "Drug lookup is temporarily unavailable",
-        detail: error.message,
-      });
-    }
-  }
-);
-
-app.get(
-  "/api/mcp/clinical-trials",
-  auth("doctor"),
-  async (req, res) => {
-    try {
-      const condition = (req.query.condition || "").trim();
-      if (!condition) {
-        return res.status(400).json({ error: "A condition is required" });
-      }
-
-      const result = await healthcareMcp.searchClinicalTrials(condition, {
-        maxResults: 5,
-      });
-      res.json({ result });
-    } catch (error) {
-      console.error("MCP clinical trials search error:", error);
-      res.status(502).json({
-        error: "Clinical trials search is temporarily unavailable",
-        detail: error.message,
-      });
-    }
-  }
-);
-
-app.get(
-  "/api/mcp/icd-lookup",
-  auth("doctor"),
-  async (req, res) => {
-    try {
-      const query = (req.query.q || "").trim();
-      if (!query) {
-        return res.status(400).json({ error: "A search term is required" });
-      }
-
-      const result = await healthcareMcp.lookupIcdCode(query);
-      res.json({ result });
-    } catch (error) {
-      console.error("MCP ICD lookup error:", error);
-      res.status(502).json({
-        error: "ICD lookup is temporarily unavailable",
-        detail: error.message,
-      });
-    }
-  }
-);
-
-
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -289,99 +196,65 @@ app.get(
 |--------------------------------------------------------------------------
 */
 
-app.post(
-  "/api/auth/signup",
-  async (req, res) => {
-    try {
-      const {
-        name,
-        email,
-        password,
-        role,
-        gender,
-        phone,
-        medical_conditions,
-        specialization,
-      } = req.body;
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      role,
+      gender,
+      phone,
+      medical_conditions,
+      specialization,
+    } = req.body;
 
-      const age =
-        req.body.age === "" ||
-        req.body.age === undefined ||
-        req.body.age === null
-          ? null
-          : Number(req.body.age);
+    const age =
+      req.body.age === "" || req.body.age === undefined || req.body.age === null
+        ? null
+        : Number(req.body.age);
 
-      if (
-        age !== null &&
-        (
-          !Number.isInteger(age) ||
-          age < 0 ||
-          age > 150
-        )
-      ) {
-        return res.status(400).json({
-          error:
-            "Age must be a valid number",
-        });
-      }
+    if (age !== null && (!Number.isInteger(age) || age < 0 || age > 150)) {
+      return res.status(400).json({
+        error: "Age must be a valid number",
+      });
+    }
 
-      if (
-        !name ||
-        !email ||
-        !password ||
-        !role
-      ) {
-        return res.status(400).json({
-          error:
-            "Missing required fields",
-        });
-      }
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({
+        error: "Missing required fields",
+      });
+    }
 
-      if (
-        !["doctor", "patient"].includes(
-          role
-        )
-      ) {
-        return res.status(400).json({
-          error:
-            "Invalid role",
-        });
-      }
+    if (!["doctor", "patient"].includes(role)) {
+      return res.status(400).json({
+        error: "Invalid role",
+      });
+    }
 
-      const normalizedEmail =
-        email
-          .trim()
-          .toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
-      const existing =
-        await db.query(
-          `
+    const existing = await db.query(
+      `
           SELECT id
           FROM users
           WHERE email = $1
           `,
-          [normalizedEmail]
-        );
+      [normalizedEmail],
+    );
 
-      if (
-        existing.rows.length > 0
-      ) {
-        return res.status(409).json({
-          error:
-            "Email already registered",
-        });
-      }
+    if (existing.rows.length > 0) {
+      return res.status(409).json({
+        error: "Email already registered",
+      });
+    }
 
-      const id = uuidv4();
+    const id = uuidv4();
 
-      const password_hash =
-        await bcrypt.hash(
-          password,
-          10
-        );
+    const password_hash = await bcrypt.hash(password, 10);
 
-      await db.query(
-        `
+    await db.query(
+      `
         INSERT INTO users (
           id,
           name,
@@ -399,65 +272,51 @@ app.post(
           $6,$7,$8,$9,$10
         )
         `,
-        [
-          id,
-          name.trim(),
-          normalizedEmail,
-          password_hash,
-          role,
-          age,
-          gender || null,
-          phone || null,
-          medical_conditions ||
-            null,
-          specialization ||
-            null,
-        ]
-      );
+      [
+        id,
+        name.trim(),
+        normalizedEmail,
+        password_hash,
+        role,
+        age,
+        gender || null,
+        phone || null,
+        medical_conditions || null,
+        specialization || null,
+      ],
+    );
 
-      const result =
-        await db.query(
-          `
+    const result = await db.query(
+      `
           SELECT *
           FROM users
           WHERE id = $1
           `,
-          [id]
-        );
+      [id],
+    );
 
-      const user =
-        result.rows[0];
+    const user = result.rows[0];
 
-      const token =
-        signToken(user);
+    const token = signToken(user);
 
-      res.json({
-        token,
-        user:
-          publicUser(user),
-      });
-    } catch (error) {
-      console.error(
-        "Signup error:",
-        error
-      );
+    res.json({
+      token,
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Signup error:", error);
 
-      if (
-        error.code === "23505"
-      ) {
-        return res.status(409).json({
-          error:
-            "Email already registered",
-        });
-      }
-
-      res.status(500).json({
-        error:
-          "Failed to create account",
+    if (error.code === "23505") {
+      return res.status(409).json({
+        error: "Email already registered",
       });
     }
+
+    res.status(500).json({
+      error: "Failed to create account",
+    });
   }
-);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -465,95 +324,63 @@ app.post(
 |--------------------------------------------------------------------------
 */
 
-app.post(
-  "/api/auth/login",
-  async (req, res) => {
-    try {
-      const {
-        email,
-        password,
-        role,
-      } = req.body;
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
 
-      if (
-        !email ||
-        !password
-      ) {
-        return res.status(400).json({
-          error:
-            "Email and password are required",
-        });
-      }
+    if (!email || !password) {
+      return res.status(400).json({
+        error: "Email and password are required",
+      });
+    }
 
-      const normalizedEmail =
-        email
-          .trim()
-          .toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
-      const result =
-        await db.query(
-          `
+    const result = await db.query(
+      `
           SELECT *
           FROM users
           WHERE email = $1
           `,
-          [normalizedEmail]
-        );
+      [normalizedEmail],
+    );
 
-      const user =
-        result.rows[0];
+    const user = result.rows[0];
 
-      if (!user) {
-        return res.status(401).json({
-          error:
-            "Invalid credentials",
-        });
-      }
-
-      if (
-        role &&
-        user.role !== role
-      ) {
-        return res.status(401).json({
-          error:
-            `No ${role} account found for this email`,
-        });
-      }
-
-      const validPassword =
-        await bcrypt.compare(
-          password,
-          user.password_hash
-        );
-
-      if (!validPassword) {
-        return res.status(401).json({
-          error:
-            "Invalid credentials",
-        });
-      }
-
-      const token =
-        signToken(user);
-
-      res.json({
-        token,
-        user:
-          publicUser(user),
-      });
-    } catch (error) {
-      console.error(
-        "Login error:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Login failed",
+    if (!user) {
+      return res.status(401).json({
+        error: "Invalid credentials",
       });
     }
+
+    if (role && user.role !== role) {
+      return res.status(401).json({
+        error: `No ${role} account found for this email`,
+      });
+    }
+
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+
+    if (!validPassword) {
+      return res.status(401).json({
+        error: "Invalid credentials",
+      });
+    }
+
+    const token = signToken(user);
+
+    res.json({
+      token,
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+
+    res.status(500).json({
+      error: "Login failed",
+    });
   }
-);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -561,48 +388,36 @@ app.post(
 |--------------------------------------------------------------------------
 */
 
-app.get(
-  "/api/auth/me",
-  auth(),
-  async (req, res) => {
-    try {
-      const result =
-        await db.query(
-          `
+app.get("/api/auth/me", auth(), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
           SELECT *
           FROM users
           WHERE id = $1
           `,
-          [req.user.id]
-        );
+      [req.user.id],
+    );
 
-      const user =
-        result.rows[0];
+    const user = result.rows[0];
 
-      if (!user) {
-        return res.status(404).json({
-          error:
-            "User not found",
-        });
-      }
-
-      res.json({
-        user:
-          publicUser(user),
-      });
-    } catch (error) {
-      console.error(
-        "Auth me error:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Failed to fetch user",
+    if (!user) {
+      return res.status(404).json({
+        error: "User not found",
       });
     }
+
+    res.json({
+      user: publicUser(user),
+    });
+  } catch (error) {
+    console.error("Auth me error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch user",
+    });
   }
-);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -610,19 +425,16 @@ app.get(
 |--------------------------------------------------------------------------
 */
 
-app.put(
-  "/api/auth/me",
-  auth(),
-  async (req, res) => {
-    try {
-      const { name, phone, specialization, medical_conditions } = req.body;
+app.put("/api/auth/me", auth(), async (req, res) => {
+  try {
+    const { name, phone, specialization, medical_conditions } = req.body;
 
-      if (!name || !name.trim()) {
-        return res.status(400).json({ error: "Name is required" });
-      }
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Name is required" });
+    }
 
-      const result = await db.query(
-        `
+    const result = await db.query(
+      `
         UPDATE users
         SET
           name = $1,
@@ -632,27 +444,26 @@ app.put(
         WHERE id = $5
         RETURNING *
         `,
-        [
-          name.trim(),
-          phone ?? null,
-          specialization ?? null,
-          medical_conditions ?? null,
-          req.user.id,
-        ],
-      );
+      [
+        name.trim(),
+        phone ?? null,
+        specialization ?? null,
+        medical_conditions ?? null,
+        req.user.id,
+      ],
+    );
 
-      const user = result.rows[0];
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      res.json({ user: publicUser(user) });
-    } catch (error) {
-      console.error("Update profile error:", error);
-      res.status(500).json({ error: "Failed to update profile" });
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
     }
+
+    res.json({ user: publicUser(user) });
+  } catch (error) {
+    console.error("Update profile error:", error);
+    res.status(500).json({ error: "Failed to update profile" });
   }
-);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -660,48 +471,44 @@ app.put(
 |--------------------------------------------------------------------------
 */
 
-app.put(
-  "/api/auth/password",
-  auth(),
-  async (req, res) => {
-    try {
-      const { currentPassword, newPassword } = req.body;
+app.put("/api/auth/password", auth(), async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
 
-      if (!currentPassword || !newPassword) {
-        return res
-          .status(400)
-          .json({ error: "Current and new password are required" });
-      }
-      if (newPassword.length < 6) {
-        return res
-          .status(400)
-          .json({ error: "New password must be at least 6 characters" });
-      }
-
-      const result = await db.query("SELECT * FROM users WHERE id = $1", [
-        req.user.id,
-      ]);
-      const user = result.rows[0];
-      if (!user) return res.status(404).json({ error: "User not found" });
-
-      const valid = await bcrypt.compare(currentPassword, user.password_hash);
-      if (!valid) {
-        return res.status(401).json({ error: "Current password is incorrect" });
-      }
-
-      const newHash = await bcrypt.hash(newPassword, 10);
-      await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
-        newHash,
-        req.user.id,
-      ]);
-
-      res.json({ ok: true });
-    } catch (error) {
-      console.error("Change password error:", error);
-      res.status(500).json({ error: "Failed to change password" });
+    if (!currentPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Current and new password are required" });
     }
+    if (newPassword.length < 6) {
+      return res
+        .status(400)
+        .json({ error: "New password must be at least 6 characters" });
+    }
+
+    const result = await db.query("SELECT * FROM users WHERE id = $1", [
+      req.user.id,
+    ]);
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
+      newHash,
+      req.user.id,
+    ]);
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ error: "Failed to change password" });
   }
-);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -755,10 +562,19 @@ app.post("/api/workspaces", auth("doctor"), async (req, res) => {
       INSERT INTO workspaces (id, doctor_id, drug_name, title, description, code, status)
       VALUES ($1,$2,$3,$4,$5,$6,'active')
       `,
-      [id, req.user.id, drug_name.trim(), title.trim(), description?.trim() || null, code],
+      [
+        id,
+        req.user.id,
+        drug_name.trim(),
+        title.trim(),
+        description?.trim() || null,
+        code,
+      ],
     );
 
-    const result = await db.query("SELECT * FROM workspaces WHERE id = $1", [id]);
+    const result = await db.query("SELECT * FROM workspaces WHERE id = $1", [
+      id,
+    ]);
     res.json({ workspace: result.rows[0] });
   } catch (error) {
     console.error("Create workspace error:", error);
@@ -792,7 +608,9 @@ app.get("/api/workspaces/mine", auth("doctor"), async (req, res) => {
 });
 
 async function getWorkspaceOr404(workspaceId, res) {
-  const result = await db.query("SELECT * FROM workspaces WHERE id = $1", [workspaceId]);
+  const result = await db.query("SELECT * FROM workspaces WHERE id = $1", [
+    workspaceId,
+  ]);
   const workspace = result.rows[0];
   if (!workspace) {
     res.status(404).json({ error: "Workspace not found" });
@@ -815,7 +633,9 @@ app.get("/api/workspaces/:workspaceId", auth(), async (req, res) => {
         [workspace.id, req.user.id],
       );
       if (enrolled.rows.length === 0) {
-        return res.status(403).json({ error: "Not enrolled in this workspace" });
+        return res
+          .status(403)
+          .json({ error: "Not enrolled in this workspace" });
       }
     }
 
@@ -834,23 +654,27 @@ app.put("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
       return res.status(403).json({ error: "Not your workspace" });
     }
 
-    const { title, description, status } = req.body;
+    const { title, description, status, drug_name } = req.body;
     const validStatuses = ["active", "completed", "archived"];
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
+    }
+    if (drug_name !== undefined && !drug_name.trim()) {
+      return res.status(400).json({ error: "Drug name can't be empty" });
     }
 
     const result = await db.query(
       `
       UPDATE workspaces
-      SET title = $1, description = $2, status = $3
-      WHERE id = $4
+      SET title = $1, description = $2, status = $3, drug_name = $4
+      WHERE id = $5
       RETURNING *
       `,
       [
         title?.trim() || workspace.title,
         description !== undefined ? description : workspace.description,
         status || workspace.status,
+        drug_name !== undefined ? drug_name.trim() : workspace.drug_name,
         workspace.id,
       ],
     );
@@ -862,6 +686,108 @@ app.put("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
   }
 });
 
+// Fully deletes a workspace and everything tied to it — patient
+// enrollments, scheduled visits, vitals, visit requests, transcripts,
+// calendar events, notification log entries. Done inside a transaction so
+// it either all goes or none of it does; children are removed before
+// parents to satisfy foreign keys. This is genuinely destructive and
+// unrecoverable — the client should confirm with the doctor before
+// calling this.
+app.delete("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
+  const client = await db.connect();
+  try {
+    const workspaceResult = await client.query(
+      "SELECT * FROM workspaces WHERE id = $1",
+      [req.params.workspaceId],
+    );
+    const workspace = workspaceResult.rows[0];
+    if (!workspace)
+      return res.status(404).json({ error: "Workspace not found" });
+    if (workspace.doctor_id !== req.user.id) {
+      return res.status(403).json({ error: "Not your workspace" });
+    }
+
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM notification_log WHERE scheduled_visit_id IN (SELECT id FROM scheduled_visits WHERE workspace_id = $1)`,
+      [workspace.id],
+    );
+    await client.query(
+      `DELETE FROM calendar_events WHERE scheduled_visit_id IN (SELECT id FROM scheduled_visits WHERE workspace_id = $1)`,
+      [workspace.id],
+    );
+    await client.query(
+      `DELETE FROM visit_transcript_chunks WHERE scheduled_visit_id IN (SELECT id FROM scheduled_visits WHERE workspace_id = $1)`,
+      [workspace.id],
+    );
+    await client.query(`DELETE FROM vitals WHERE workspace_id = $1`, [
+      workspace.id,
+    ]);
+    await client.query(`DELETE FROM visit_requests WHERE workspace_id = $1`, [
+      workspace.id,
+    ]);
+    await client.query(`DELETE FROM scheduled_visits WHERE workspace_id = $1`, [
+      workspace.id,
+    ]);
+    await client.query(
+      `DELETE FROM workspace_patients WHERE workspace_id = $1`,
+      [workspace.id],
+    );
+    await client.query(`DELETE FROM workspaces WHERE id = $1`, [workspace.id]);
+    await client.query("COMMIT");
+
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Delete workspace error:", error);
+    res.status(500).json({ error: "Failed to delete workspace" });
+  } finally {
+    client.release();
+  }
+});
+
+// Manual checklist editing — the doctor can hand-author or tweak the
+// pre/post-dosage/general checklist items directly, independent of the
+// AI-from-protocol-text generator above. Accepts the same shape the
+// generator produces: { pre_dosage: string[], post_dosage: string[],
+// general: string[] }.
+app.put(
+  "/api/workspaces/:workspaceId/checklist",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const { checklist } = req.body;
+      if (!checklist || typeof checklist !== "object") {
+        return res.status(400).json({ error: "checklist object is required" });
+      }
+      const stages = ["pre_dosage", "post_dosage", "general"];
+      const cleaned = {};
+      for (const stage of stages) {
+        const items = Array.isArray(checklist[stage]) ? checklist[stage] : [];
+        cleaned[stage] = items
+          .map((item) => String(item).trim())
+          .filter(Boolean);
+      }
+
+      const result = await db.query(
+        `UPDATE workspaces SET checklist = $1 WHERE id = $2 RETURNING *`,
+        [JSON.stringify(cleaned), workspace.id],
+      );
+
+      res.json({ workspace: result.rows[0] });
+    } catch (error) {
+      console.error("Update checklist error:", error);
+      res.status(500).json({ error: "Failed to update checklist" });
+    }
+  },
+);
+
 // ---------- Enrollment ----------
 
 app.post("/api/workspaces/join", auth("patient"), async (req, res) => {
@@ -871,13 +797,18 @@ app.post("/api/workspaces/join", auth("patient"), async (req, res) => {
       return res.status(400).json({ error: "Workspace code is required" });
     }
 
-    const workspaceResult = await db.query("SELECT * FROM workspaces WHERE code = $1", [code]);
+    const workspaceResult = await db.query(
+      "SELECT * FROM workspaces WHERE code = $1",
+      [code],
+    );
     const workspace = workspaceResult.rows[0];
     if (!workspace) {
       return res.status(404).json({ error: "Invalid workspace code" });
     }
     if (workspace.status !== "active") {
-      return res.status(409).json({ error: "This workspace is no longer accepting patients" });
+      return res
+        .status(409)
+        .json({ error: "This workspace is no longer accepting patients" });
     }
 
     const existing = await db.query(
@@ -953,16 +884,19 @@ app.get("/api/workspaces/patient/mine", auth("patient"), async (req, res) => {
 
 // ---------- Patient roster (doctor view, scoped to one workspace) ----------
 
-app.get("/api/workspaces/:workspaceId/patients", auth("doctor"), async (req, res) => {
-  try {
-    const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
-    if (!workspace) return;
-    if (workspace.doctor_id !== req.user.id) {
-      return res.status(403).json({ error: "Not your workspace" });
-    }
+app.get(
+  "/api/workspaces/:workspaceId/patients",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
 
-    const result = await db.query(
-      `
+      const result = await db.query(
+        `
       SELECT
         u.id, u.name, u.email, u.age, u.gender, u.phone, u.medical_conditions,
         wp.joined_at, wp.status AS enrollment_status,
@@ -977,91 +911,187 @@ app.get("/api/workspaces/:workspaceId/patients", auth("doctor"), async (req, res
       GROUP BY u.id, wp.joined_at, wp.status
       ORDER BY wp.joined_at DESC
       `,
-      [workspace.id],
-    );
+        [workspace.id],
+      );
 
-    res.json({ patients: result.rows });
-  } catch (error) {
-    console.error("Workspace patients error:", error);
-    res.status(500).json({ error: "Failed to fetch patients" });
-  }
-});
+      res.json({ patients: result.rows });
+    } catch (error) {
+      console.error("Workspace patients error:", error);
+      res.status(500).json({ error: "Failed to fetch patients" });
+    }
+  },
+);
+
+// Removes a patient from a workspace. Kept as a soft "withdrawn" status
+// rather than deleting the enrollment row outright, so visit history and
+// vitals for that patient stay intact and queryable — only their access
+// and any future visits go away. Any of their still-upcoming visits in
+// this workspace are cancelled at the same time so they don't end up
+// with a dangling scheduled call to a trial they're no longer part of.
+app.delete(
+  "/api/workspaces/:workspaceId/patients/:patientId",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const enrollment = await db.query(
+        "SELECT * FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2",
+        [workspace.id, req.params.patientId],
+      );
+      if (enrollment.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Patient is not enrolled in this workspace" });
+      }
+
+      await db.query(
+        "UPDATE workspace_patients SET status = 'withdrawn' WHERE workspace_id = $1 AND patient_id = $2",
+        [workspace.id, req.params.patientId],
+      );
+      await db.query(
+        `
+        UPDATE scheduled_visits SET status = 'cancelled'
+        WHERE workspace_id = $1 AND patient_id = $2 AND status IN ('scheduled', 'active')
+        `,
+        [workspace.id, req.params.patientId],
+      );
+
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Remove patient error:", error);
+      res.status(500).json({ error: "Failed to remove patient" });
+    }
+  },
+);
 
 // ============================================================
 // SCHEDULED VISIT ROUTES
 // ============================================================
 
-app.post("/api/workspaces/:workspaceId/visits", auth("doctor"), async (req, res) => {
-  try {
-    const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
-    if (!workspace) return;
-    if (workspace.doctor_id !== req.user.id) {
-      return res.status(403).json({ error: "Not your workspace" });
-    }
+app.post(
+  "/api/workspaces/:workspaceId/visits",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
 
-    const { patient_id, scheduled_at, title } = req.body;
-    if (!patient_id || !scheduled_at) {
-      return res.status(400).json({ error: "Patient and scheduled time are required" });
-    }
+      const { patient_id, scheduled_at, title } = req.body;
+      if (!patient_id || !scheduled_at) {
+        return res
+          .status(400)
+          .json({ error: "Patient and scheduled time are required" });
+      }
 
-    const enrolled = await db.query(
-      "SELECT id FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2 AND status = 'active'",
-      [workspace.id, patient_id],
-    );
-    if (enrolled.rows.length === 0) {
-      return res.status(400).json({ error: "Patient is not enrolled in this workspace" });
-    }
+      const enrolled = await db.query(
+        "SELECT id FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2 AND status = 'active'",
+        [workspace.id, patient_id],
+      );
+      if (enrolled.rows.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Patient is not enrolled in this workspace" });
+      }
 
-    const id = uuidv4();
-    const roomCode = await genUniqueCode("scheduled_visits", "room_code");
+      const id = uuidv4();
+      const roomCode = await genUniqueCode("scheduled_visits", "room_code");
 
-    await db.query(
-      `
+      await db.query(
+        `
       INSERT INTO scheduled_visits (id, workspace_id, patient_id, doctor_id, room_code, title, scheduled_at, status)
       VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled')
       `,
-      [id, workspace.id, patient_id, req.user.id, roomCode, title?.trim() || null, scheduled_at],
-    );
+        [
+          id,
+          workspace.id,
+          patient_id,
+          req.user.id,
+          roomCode,
+          title?.trim() || null,
+          scheduled_at,
+        ],
+      );
 
-    const result = await db.query("SELECT * FROM scheduled_visits WHERE id = $1", [id]);
-    res.json({ visit: result.rows[0] });
-  } catch (error) {
-    console.error("Schedule visit error:", error);
-    res.status(500).json({ error: "Failed to schedule visit" });
-  }
-});
+      const result = await db.query(
+        "SELECT * FROM scheduled_visits WHERE id = $1",
+        [id],
+      );
+      const visit = result.rows[0];
 
-app.get("/api/workspaces/:workspaceId/visits", auth("doctor"), async (req, res) => {
-  try {
-    const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
-    if (!workspace) return;
-    if (workspace.doctor_id !== req.user.id) {
-      return res.status(403).json({ error: "Not your workspace" });
+      // Best-effort: never blocks or fails the scheduling response even if
+      // email sending has trouble — errors are caught and logged only.
+      try {
+        const peopleResult = await db.query(
+          "SELECT id, name, email FROM users WHERE id = ANY($1::text[])",
+          [[req.user.id, patient_id]],
+        );
+        const doctor = peopleResult.rows.find((u) => u.id === req.user.id);
+        const patient = peopleResult.rows.find((u) => u.id === patient_id);
+        await visitScheduledEmail.sendVisitScheduledEmails({
+          visit,
+          workspaceTitle: workspace.title,
+          drugName: workspace.drug_name,
+          doctor,
+          patient,
+          senderRole: "doctor",
+          appUrl: APP_URL,
+        });
+      } catch (emailError) {
+        console.warn("Visit-scheduled email skipped:", emailError.message);
+      }
+
+      res.json({ visit });
+    } catch (error) {
+      console.error("Schedule visit error:", error);
+      res.status(500).json({ error: "Failed to schedule visit" });
     }
+  },
+);
 
-    const result = await db.query(
-      `
+app.get(
+  "/api/workspaces/:workspaceId/visits",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const result = await db.query(
+        `
       SELECT sv.*, u.name AS patient_name
       FROM scheduled_visits sv
       JOIN users u ON u.id = sv.patient_id
       WHERE sv.workspace_id = $1
       ORDER BY sv.scheduled_at ASC
       `,
-      [workspace.id],
-    );
+        [workspace.id],
+      );
 
-    res.json({ visits: result.rows });
-  } catch (error) {
-    console.error("List workspace visits error:", error);
-    res.status(500).json({ error: "Failed to fetch visits" });
-  }
-});
+      res.json({ visits: result.rows });
+    } catch (error) {
+      console.error("List workspace visits error:", error);
+      res.status(500).json({ error: "Failed to fetch visits" });
+    }
+  },
+);
 
 app.put("/api/visits/:visitId", auth("doctor"), async (req, res) => {
   try {
-    const existing = await db.query("SELECT * FROM scheduled_visits WHERE id = $1", [
-      req.params.visitId,
-    ]);
+    const existing = await db.query(
+      "SELECT * FROM scheduled_visits WHERE id = $1",
+      [req.params.visitId],
+    );
     const visit = existing.rows[0];
     if (!visit) return res.status(404).json({ error: "Visit not found" });
     if (visit.doctor_id !== req.user.id) {
@@ -1069,7 +1099,13 @@ app.put("/api/visits/:visitId", auth("doctor"), async (req, res) => {
     }
 
     const { scheduled_at, title, status } = req.body;
-    const validStatuses = ["scheduled", "active", "completed", "missed", "cancelled"];
+    const validStatuses = [
+      "scheduled",
+      "active",
+      "completed",
+      "missed",
+      "cancelled",
+    ];
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
@@ -1126,7 +1162,7 @@ app.get("/api/visits/by-code/:code", auth(), async (req, res) => {
     const code = req.params.code.toUpperCase();
     const result = await db.query(
       `
-      SELECT sv.*, w.title AS workspace_title, w.drug_name, d.name AS doctor_name, p.name AS patient_name
+      SELECT sv.*, w.title AS workspace_title, w.drug_name, w.checklist, d.name AS doctor_name, p.name AS patient_name
       FROM scheduled_visits sv
       JOIN workspaces w ON w.id = sv.workspace_id
       JOIN users d ON d.id = sv.doctor_id
@@ -1161,67 +1197,432 @@ app.get("/api/visits/by-code/:code", auth(), async (req, res) => {
   }
 });
 
-app.post("/api/visits/by-code/:code/complete", auth("doctor"), async (req, res) => {
-  try {
-    const code = req.params.code.toUpperCase();
-    const result = await db.query(
-      `
-      SELECT sv.*, w.title AS workspace_title, w.drug_name
+app.post(
+  "/api/visits/by-code/:code/complete",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const code = req.params.code.toUpperCase();
+      const result = await db.query(
+        `
+      SELECT sv.*, w.title AS workspace_title, w.drug_name, w.checklist
       FROM scheduled_visits sv
       JOIN workspaces w ON w.id = sv.workspace_id
       WHERE sv.room_code = $1
       `,
-      [code],
-    );
-    const visit = result.rows[0];
-    if (!visit || visit.doctor_id !== req.user.id) {
-      return res.status(404).json({ error: "Visit not found" });
-    }
-
-    // Generate the after-visit summary before marking complete, so the
-    // patient has it the moment the visit closes. Never blocks completion
-    // if the AI call fails (e.g. no GROQ_API_KEY set) — the visit still
-    // completes, just without a summary.
-    let summary = null;
-    try {
-      const vitalsResult = await db.query(
-        `SELECT * FROM vitals WHERE scheduled_visit_id = $1 ORDER BY stage ASC`,
-        [visit.id],
+        [code],
       );
-      summary = await handoffAgent.generateVisitSummary({
-        workspaceTitle: visit.workspace_title,
-        drugName: visit.drug_name,
-        vitalsRows: vitalsResult.rows,
-      });
-    } catch (aiError) {
-      console.warn("Visit summary generation skipped:", aiError.message);
+      const visit = result.rows[0];
+      if (!visit || visit.doctor_id !== req.user.id) {
+        return res.status(404).json({ error: "Visit not found" });
+      }
+
+      // Checklist enforcement: if this workspace has a protocol checklist,
+      // every required item must be confirmed before the visit can be
+      // marked complete — unless the doctor explicitly overrides, which
+      // is logged as a protocol deviation rather than silently allowed.
+      const hasChecklist =
+        visit.checklist &&
+        (visit.checklist.pre_dosage?.length ||
+          visit.checklist.post_dosage?.length ||
+          visit.checklist.general?.length);
+
+      if (hasChecklist && !req.body.override) {
+        const incomplete = checklistAgent.getIncompleteItems(
+          visit.checklist,
+          visit.checklist_progress,
+        );
+        if (incomplete.length > 0) {
+          return res.status(409).json({
+            error: "Checklist incomplete",
+            incomplete,
+            hint: 'Complete these items, or retry with { "override": true, "overrideReason": "..." } to log a deviation and complete anyway.',
+          });
+        }
+      }
+
+      if (
+        hasChecklist &&
+        req.body.override &&
+        !req.body.overrideReason?.trim()
+      ) {
+        return res.status(400).json({
+          error: "An override reason is required to log this deviation",
+        });
+      }
+
+      let checklistProgress = visit.checklist_progress || {};
+      if (hasChecklist && req.body.override) {
+        checklistProgress = {
+          ...checklistProgress,
+          _override_reason: req.body.overrideReason.trim(),
+          _overridden_at: new Date().toISOString(),
+        };
+      }
+
+      // Generate the after-visit summary before marking complete, so the
+      // patient has it the moment the visit closes. Never blocks completion
+      // if the AI call fails (e.g. no GROQ_API_KEY set) — the visit still
+      // completes, just without a summary.
+      let summary = null;
+      try {
+        const vitalsResult = await db.query(
+          `SELECT * FROM vitals WHERE scheduled_visit_id = $1 ORDER BY stage ASC`,
+          [visit.id],
+        );
+        summary = await handoffAgent.generateVisitSummary({
+          workspaceTitle: visit.workspace_title,
+          drugName: visit.drug_name,
+          vitalsRows: vitalsResult.rows,
+        });
+      } catch (aiError) {
+        console.warn("Visit summary generation skipped:", aiError.message);
+      }
+
+      await db.query(
+        `
+      UPDATE scheduled_visits
+      SET status = 'completed', completed_at = NOW(), ai_summary = $1, ai_summary_generated_at = $2, checklist_progress = $3
+      WHERE id = $4
+      `,
+        [
+          summary,
+          summary ? new Date().toISOString() : null,
+          JSON.stringify(checklistProgress),
+          visit.id,
+        ],
+      );
+
+      io.to(`room:${code}`).emit("room:completed", { summary });
+      res.json({ ok: true, summary });
+    } catch (error) {
+      console.error("Complete visit error:", error);
+      res.status(500).json({ error: "Failed to complete visit" });
+    }
+  },
+);
+
+// ============================================================
+// CHECKLIST ROUTES (Feature 2: Live Visit Checklist Agent)
+// ============================================================
+
+app.put(
+  "/api/workspaces/:workspaceId/protocol",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const { protocol_text } = req.body;
+      if (!protocol_text || !protocol_text.trim()) {
+        return res.status(400).json({ error: "Protocol text is required" });
+      }
+
+      let checklist;
+      try {
+        checklist = await checklistAgent.generateChecklist(protocol_text);
+      } catch (aiError) {
+        console.error("Checklist generation failed:", aiError.message);
+        return res.status(502).json({
+          error: "Couldn't generate a checklist from this protocol",
+          detail: aiError.message,
+        });
+      }
+
+      const result = await db.query(
+        `UPDATE workspaces SET protocol_text = $1, checklist = $2 WHERE id = $3 RETURNING *`,
+        [protocol_text, JSON.stringify(checklist), workspace.id],
+      );
+
+      res.json({ workspace: result.rows[0] });
+    } catch (error) {
+      console.error("Set protocol error:", error);
+      res.status(500).json({ error: "Failed to set protocol" });
+    }
+  },
+);
+
+app.put("/api/visits/:visitId/checklist", auth("doctor"), async (req, res) => {
+  try {
+    const { stage, item, checked } = req.body;
+    if (!stage || !item || typeof checked !== "boolean") {
+      return res
+        .status(400)
+        .json({ error: "stage, item, and checked are required" });
     }
 
-    await db.query(
-      `
-      UPDATE scheduled_visits
-      SET status = 'completed', completed_at = NOW(), ai_summary = $1, ai_summary_generated_at = $2
-      WHERE id = $3
-      `,
-      [summary, summary ? new Date().toISOString() : null, visit.id],
+    const existing = await db.query(
+      "SELECT * FROM scheduled_visits WHERE id = $1",
+      [req.params.visitId],
+    );
+    const visit = existing.rows[0];
+    if (!visit) return res.status(404).json({ error: "Visit not found" });
+    if (visit.doctor_id !== req.user.id) {
+      return res.status(403).json({ error: "Not your visit" });
+    }
+
+    const progress = visit.checklist_progress || {};
+    const updatedProgress = {
+      ...progress,
+      [stage]: { ...(progress[stage] || {}), [item]: checked },
+    };
+
+    const result = await db.query(
+      `UPDATE scheduled_visits SET checklist_progress = $1 WHERE id = $2 RETURNING *`,
+      [JSON.stringify(updatedProgress), visit.id],
     );
 
-    io.to(`room:${code}`).emit("room:completed", { summary });
-    res.json({ ok: true, summary });
+    io.to(`room:${visit.room_code}`).emit("checklist:updated", {
+      progress: updatedProgress,
+    });
+    res.json({ visit: result.rows[0] });
   } catch (error) {
-    console.error("Complete visit error:", error);
-    res.status(500).json({ error: "Failed to complete visit" });
+    console.error("Update checklist progress error:", error);
+    res.status(500).json({ error: "Failed to update checklist" });
   }
 });
+
+// ============================================================
+// VISIT REQUEST ROUTES (Feature 1: Intake / urgency triage)
+// ============================================================
+
+app.post(
+  "/api/workspaces/:workspaceId/visit-requests",
+  auth("patient"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+
+      const enrolled = await db.query(
+        "SELECT id FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2",
+        [workspace.id, req.user.id],
+      );
+      if (enrolled.rows.length === 0) {
+        return res
+          .status(403)
+          .json({ error: "Not enrolled in this workspace" });
+      }
+
+      const { concern_text } = req.body;
+      if (!concern_text || !concern_text.trim()) {
+        return res.status(400).json({ error: "Please describe your concern" });
+      }
+
+      let classification = {
+        urgency: "unclear",
+        reasoning: "AI triage unavailable",
+        confidence: 0,
+      };
+      try {
+        classification = await intakeAgent.classifyConcern(concern_text);
+      } catch (aiError) {
+        console.warn("Intake classification skipped:", aiError.message);
+      }
+
+      const id = uuidv4();
+      await db.query(
+        `
+      INSERT INTO visit_requests (id, workspace_id, patient_id, concern_text, urgency, urgency_reasoning, status)
+      VALUES ($1,$2,$3,$4,$5,$6,'pending')
+      `,
+        [
+          id,
+          workspace.id,
+          req.user.id,
+          concern_text,
+          classification.urgency,
+          classification.reasoning,
+        ],
+      );
+
+      // Best-effort email to the doctor for high-urgency requests. Falls
+      // back to a console/audit-log entry if email isn't configured.
+      if (classification.urgency === "high") {
+        const doctorResult = await db.query(
+          "SELECT email, name FROM users WHERE id = $1",
+          [workspace.doctor_id],
+        );
+        const doctor = doctorResult.rows[0];
+        await emailClient.sendEmail({
+          toEmail: doctor?.email,
+          subject: `High-urgency patient message — ${workspace.title}`,
+          message: `Hi ${doctor?.name || "Doctor"},\n\nA patient submitted a high-urgency concern in ${workspace.title}:\n\n"${concern_text}"\n\nPlease review it in your CareThread dashboard.\n\n— CareThread`,
+          kind: "urgent_intake",
+          recipientUserId: workspace.doctor_id,
+        });
+      }
+
+      const result = await db.query(
+        "SELECT * FROM visit_requests WHERE id = $1",
+        [id],
+      );
+      res.json({ request: result.rows[0] });
+    } catch (error) {
+      console.error("Create visit request error:", error);
+      res.status(500).json({ error: "Failed to submit your concern" });
+    }
+  },
+);
+
+app.get(
+  "/api/workspaces/:workspaceId/visit-requests",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const result = await db.query(
+        `
+      SELECT vr.*, u.name AS patient_name
+      FROM visit_requests vr
+      JOIN users u ON u.id = vr.patient_id
+      WHERE vr.workspace_id = $1
+      ORDER BY
+        CASE vr.urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'unclear' THEN 2 ELSE 3 END,
+        vr.created_at DESC
+      `,
+        [workspace.id],
+      );
+
+      res.json({ requests: result.rows });
+    } catch (error) {
+      console.error("List visit requests error:", error);
+      res.status(500).json({ error: "Failed to fetch requests" });
+    }
+  },
+);
+
+app.post(
+  "/api/visit-requests/:requestId/schedule",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const { scheduled_at, title } = req.body;
+      if (!scheduled_at)
+        return res.status(400).json({ error: "scheduled_at is required" });
+
+      const reqResult = await db.query(
+        "SELECT * FROM visit_requests WHERE id = $1",
+        [req.params.requestId],
+      );
+      const visitRequest = reqResult.rows[0];
+      if (!visitRequest)
+        return res.status(404).json({ error: "Request not found" });
+
+      const workspace = await getWorkspaceOr404(visitRequest.workspace_id, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      const id = uuidv4();
+      const roomCode = await genUniqueCode("scheduled_visits", "room_code");
+      await db.query(
+        `
+      INSERT INTO scheduled_visits (id, workspace_id, patient_id, doctor_id, room_code, title, scheduled_at, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled')
+      `,
+        [
+          id,
+          workspace.id,
+          visitRequest.patient_id,
+          req.user.id,
+          roomCode,
+          title?.trim() || "Requested visit",
+          scheduled_at,
+        ],
+      );
+
+      await db.query(
+        `UPDATE visit_requests SET status = 'scheduled', resulting_visit_id = $1 WHERE id = $2`,
+        [id, visitRequest.id],
+      );
+
+      const result = await db.query(
+        "SELECT * FROM scheduled_visits WHERE id = $1",
+        [id],
+      );
+      const visit = result.rows[0];
+
+      try {
+        const peopleResult = await db.query(
+          "SELECT id, name, email FROM users WHERE id = ANY($1::text[])",
+          [[req.user.id, visitRequest.patient_id]],
+        );
+        const doctor = peopleResult.rows.find((u) => u.id === req.user.id);
+        const patient = peopleResult.rows.find(
+          (u) => u.id === visitRequest.patient_id,
+        );
+        await visitScheduledEmail.sendVisitScheduledEmails({
+          visit,
+          workspaceTitle: workspace.title,
+          drugName: workspace.drug_name,
+          doctor,
+          patient,
+          senderRole: "doctor",
+          appUrl: APP_URL,
+        });
+      } catch (emailError) {
+        console.warn("Visit-scheduled email skipped:", emailError.message);
+      }
+
+      res.json({ visit });
+    } catch (error) {
+      console.error("Schedule from visit request error:", error);
+      res.status(500).json({ error: "Failed to schedule visit" });
+    }
+  },
+);
+
+app.post(
+  "/api/visit-requests/:requestId/dismiss",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const reqResult = await db.query(
+        "SELECT * FROM visit_requests WHERE id = $1",
+        [req.params.requestId],
+      );
+      const visitRequest = reqResult.rows[0];
+      if (!visitRequest)
+        return res.status(404).json({ error: "Request not found" });
+
+      const workspace = await getWorkspaceOr404(visitRequest.workspace_id, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
+
+      await db.query(
+        `UPDATE visit_requests SET status = 'dismissed' WHERE id = $1`,
+        [visitRequest.id],
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Dismiss visit request error:", error);
+      res.status(500).json({ error: "Failed to dismiss request" });
+    }
+  },
+);
 
 // ============================================================
 // VITALS ROUTES (split: patient submits readings, doctor submits dosage/notes)
 // ============================================================
 
 async function getVisitOr404(scheduledVisitId, res) {
-  const result = await db.query("SELECT * FROM scheduled_visits WHERE id = $1", [
-    scheduledVisitId,
-  ]);
+  const result = await db.query(
+    "SELECT * FROM scheduled_visits WHERE id = $1",
+    [scheduledVisitId],
+  );
   const visit = result.rows[0];
   if (!visit) {
     res.status(404).json({ error: "Visit not found" });
@@ -1230,18 +1631,142 @@ async function getVisitOr404(scheduledVisitId, res) {
   return visit;
 }
 
+// ============================================================
+// VISIT REPORT (downloadable PDF, doctor or patient of the visit)
+// ============================================================
+
+app.get("/api/visits/:visitId/report", auth(), async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+      SELECT sv.*, w.title AS workspace_title, w.drug_name,
+        doc.name AS doctor_name, pat.name AS patient_name
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      JOIN users doc ON doc.id = sv.doctor_id
+      JOIN users pat ON pat.id = sv.patient_id
+      WHERE sv.id = $1
+      `,
+      [req.params.visitId],
+    );
+    const visit = result.rows[0];
+    if (!visit) return res.status(404).json({ error: "Visit not found" });
+
+    if (req.user.id !== visit.doctor_id && req.user.id !== visit.patient_id) {
+      return res.status(403).json({ error: "Not your visit" });
+    }
+    if (visit.status !== "completed") {
+      return res
+        .status(400)
+        .json({
+          error: "The report is available once this visit is completed",
+        });
+    }
+
+    const vitalsResult = await db.query(
+      `SELECT * FROM vitals WHERE scheduled_visit_id = $1 ORDER BY stage ASC`,
+      [visit.id],
+    );
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="carethread-visit-${visit.room_code}.pdf"`,
+    );
+
+    streamVisitReport(res, {
+      workspaceTitle: visit.workspace_title,
+      drugName: visit.drug_name,
+      visitTitle: visit.title || "Trial Visit",
+      scheduledAt: visit.scheduled_at,
+      completedAt: visit.completed_at,
+      roomCode: visit.room_code,
+      doctorName: visit.doctor_name,
+      patientName: visit.patient_name,
+      vitalsRows: vitalsResult.rows,
+      aiSummary: visit.ai_summary,
+    });
+  } catch (error) {
+    console.error("Visit report error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to generate report" });
+    }
+  }
+});
+
+// ============================================================
+// CHAT AGENT — a chat interface that can perform real tasks (schedule
+// visits, submit concerns, look things up) via tool-calling. Stateless
+// server-side: the client sends the full conversation each turn, nothing
+// is persisted, so there's no history across sessions by design.
+// ============================================================
+
+app.post("/api/agent/chat", auth(), async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+    const trimmed = messages
+      .slice(-20) // cap context sent per turn
+      .filter(
+        (m) =>
+          m &&
+          typeof m.content === "string" &&
+          ["user", "assistant"].includes(m.role),
+      )
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    const { reply, actions } = await chatAgent.runChat(trimmed, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.json({ reply, actions });
+  } catch (error) {
+    console.error("Chat agent error:", error);
+    res
+      .status(500)
+      .json({
+        error: error.message?.includes("GROQ_API_KEY")
+          ? error.message
+          : "The assistant hit a problem — try again.",
+      });
+  }
+});
+
 const VALID_STAGES = ["pre_dosage", "post_dosage", "general"];
 
 app.put("/api/vitals/patient", auth("patient"), async (req, res) => {
   try {
-    const { scheduled_visit_id, stage, temperature, bp_systolic, bp_diastolic, sugar, spo2, heart_rate } =
-      req.body;
+    const {
+      scheduled_visit_id,
+      stage,
+      temperature,
+      bp_systolic,
+      bp_diastolic,
+      sugar,
+      spo2,
+      heart_rate,
+    } = req.body;
 
     if (!scheduled_visit_id || !stage) {
       return res.status(400).json({ error: "Visit and stage are required" });
     }
     if (!VALID_STAGES.includes(stage)) {
       return res.status(400).json({ error: "Invalid stage" });
+    }
+    const hasAnyReading = [
+      temperature,
+      bp_systolic,
+      bp_diastolic,
+      sugar,
+      spo2,
+      heart_rate,
+    ].some((v) => v !== null && v !== undefined && v !== "");
+    if (!hasAnyReading) {
+      return res
+        .status(400)
+        .json({ error: "At least one reading is required" });
     }
 
     const visit = await getVisitOr404(scheduled_visit_id, res);
@@ -1251,13 +1776,37 @@ app.put("/api/vitals/patient", auth("patient"), async (req, res) => {
     }
 
     const id = uuidv4();
+
+    // Anomaly Detection Agent: check this reading against the patient's
+    // own history in this workspace before it's finalized. Never blocks
+    // the save — a flag is informational for the doctor, not a gate.
+    let anomalyFlags = [];
+    try {
+      anomalyFlags = await anomalyAgent.checkVitalsSubmission({
+        patientId: visit.patient_id,
+        workspaceId: visit.workspace_id,
+        currentVisitId: visit.id,
+        reading: {
+          temperature,
+          bp_systolic,
+          bp_diastolic,
+          sugar,
+          spo2,
+          heart_rate,
+        },
+      });
+    } catch (anomalyError) {
+      console.warn("Anomaly check skipped:", anomalyError.message);
+    }
+
     const result = await db.query(
       `
       INSERT INTO vitals (
         id, scheduled_visit_id, workspace_id, patient_id, doctor_id, stage,
-        temperature, bp_systolic, bp_diastolic, sugar, spo2, heart_rate, patient_submitted_at
+        temperature, bp_systolic, bp_diastolic, sugar, spo2, heart_rate, patient_submitted_at,
+        anomaly_flags
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW(), $13)
       ON CONFLICT (scheduled_visit_id, stage) DO UPDATE SET
         temperature = EXCLUDED.temperature,
         bp_systolic = EXCLUDED.bp_systolic,
@@ -1265,7 +1814,8 @@ app.put("/api/vitals/patient", auth("patient"), async (req, res) => {
         sugar = EXCLUDED.sugar,
         spo2 = EXCLUDED.spo2,
         heart_rate = EXCLUDED.heart_rate,
-        patient_submitted_at = NOW()
+        patient_submitted_at = NOW(),
+        anomaly_flags = EXCLUDED.anomaly_flags
       RETURNING *
       `,
       [
@@ -1281,12 +1831,13 @@ app.put("/api/vitals/patient", auth("patient"), async (req, res) => {
         sugar ?? null,
         spo2 ?? null,
         heart_rate ?? null,
+        JSON.stringify(anomalyFlags),
       ],
     );
 
     const entry = result.rows[0];
     io.to(`room:${visit.room_code}`).emit("vitals:new", entry);
-    res.json({ vitals: entry });
+    res.json({ vitals: entry, anomalyFlags });
   } catch (error) {
     console.error("Patient vitals upsert error:", error);
     res.status(500).json({ error: "Failed to save vitals" });
@@ -1302,6 +1853,9 @@ app.put("/api/vitals/doctor", auth("doctor"), async (req, res) => {
     }
     if (!VALID_STAGES.includes(stage)) {
       return res.status(400).json({ error: "Invalid stage" });
+    }
+    if (!dosage_given?.trim() && !doctor_notes?.trim()) {
+      return res.status(400).json({ error: "Dosage or notes are required" });
     }
 
     const visit = await getVisitOr404(scheduled_visit_id, res);
@@ -1371,101 +1925,114 @@ app.get("/api/vitals/visit/:scheduledVisitId", auth(), async (req, res) => {
 // DASHBOARD / ANALYTICS
 // ============================================================
 
-app.get("/api/workspaces/:workspaceId/dashboard", auth("doctor"), async (req, res) => {
-  try {
-    const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
-    if (!workspace) return;
-    if (workspace.doctor_id !== req.user.id) {
-      return res.status(403).json({ error: "Not your workspace" });
-    }
+app.get(
+  "/api/workspaces/:workspaceId/dashboard",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
+      if (workspace.doctor_id !== req.user.id) {
+        return res.status(403).json({ error: "Not your workspace" });
+      }
 
-    const patientCountResult = await db.query(
-      "SELECT COUNT(*) FROM workspace_patients WHERE workspace_id = $1 AND status = 'active'",
-      [workspace.id],
-    );
+      const patientCountResult = await db.query(
+        "SELECT COUNT(*) FROM workspace_patients WHERE workspace_id = $1 AND status = 'active'",
+        [workspace.id],
+      );
 
-    const visitsResult = await db.query(
-      "SELECT * FROM scheduled_visits WHERE workspace_id = $1 ORDER BY scheduled_at ASC",
-      [workspace.id],
-    );
-    const visits = visitsResult.rows;
+      const visitsResult = await db.query(
+        "SELECT * FROM scheduled_visits WHERE workspace_id = $1 ORDER BY scheduled_at ASC",
+        [workspace.id],
+      );
+      const visits = visitsResult.rows;
 
-    const vitalsResult = await db.query(
-      `
+      const vitalsResult = await db.query(
+        `
       SELECT v.*, sv.scheduled_at
       FROM vitals v
       JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
       WHERE v.workspace_id = $1
       ORDER BY sv.scheduled_at ASC
       `,
-      [workspace.id],
-    );
-    const vitals = vitalsResult.rows;
+        [workspace.id],
+      );
+      const vitals = vitalsResult.rows;
 
-    const avg = (arr) =>
-      arr.length
-        ? +(arr.reduce((sum, v) => sum + Number(v), 0) / arr.length).toFixed(1)
-        : null;
-    const nums = (rows, field) =>
-      rows.map((r) => r[field]).filter((v) => v !== null && v !== undefined);
+      const avg = (arr) =>
+        arr.length
+          ? +(arr.reduce((sum, v) => sum + Number(v), 0) / arr.length).toFixed(
+              1,
+            )
+          : null;
+      const nums = (rows, field) =>
+        rows.map((r) => r[field]).filter((v) => v !== null && v !== undefined);
 
-    // "Drug performance": compare averages pre-dosage vs post-dosage across the cohort.
-    const pre = vitals.filter((v) => v.stage === "pre_dosage");
-    const post = vitals.filter((v) => v.stage === "post_dosage");
+      // "Drug performance": compare averages pre-dosage vs post-dosage across the cohort.
+      const pre = vitals.filter((v) => v.stage === "pre_dosage");
+      const post = vitals.filter((v) => v.stage === "post_dosage");
 
-    const drugPerformance = {
-      preDosage: {
-        avgTemperature: avg(nums(pre, "temperature")),
-        avgSystolic: avg(nums(pre, "bp_systolic")),
-        avgDiastolic: avg(nums(pre, "bp_diastolic")),
-        avgSugar: avg(nums(pre, "sugar")),
-        avgSpo2: avg(nums(pre, "spo2")),
-        avgHeartRate: avg(nums(pre, "heart_rate")),
-      },
-      postDosage: {
-        avgTemperature: avg(nums(post, "temperature")),
-        avgSystolic: avg(nums(post, "bp_systolic")),
-        avgDiastolic: avg(nums(post, "bp_diastolic")),
-        avgSugar: avg(nums(post, "sugar")),
-        avgSpo2: avg(nums(post, "spo2")),
-        avgHeartRate: avg(nums(post, "heart_rate")),
-      },
-    };
+      const drugPerformance = {
+        preDosage: {
+          avgTemperature: avg(nums(pre, "temperature")),
+          avgSystolic: avg(nums(pre, "bp_systolic")),
+          avgDiastolic: avg(nums(pre, "bp_diastolic")),
+          avgSugar: avg(nums(pre, "sugar")),
+          avgSpo2: avg(nums(pre, "spo2")),
+          avgHeartRate: avg(nums(pre, "heart_rate")),
+        },
+        postDosage: {
+          avgTemperature: avg(nums(post, "temperature")),
+          avgSystolic: avg(nums(post, "bp_systolic")),
+          avgDiastolic: avg(nums(post, "bp_diastolic")),
+          avgSugar: avg(nums(post, "sugar")),
+          avgSpo2: avg(nums(post, "spo2")),
+          avgHeartRate: avg(nums(post, "heart_rate")),
+        },
+      };
 
-    const trend = vitals.map((v) => ({
-      date: v.scheduled_at,
-      temperature: v.temperature,
-      systolic: v.bp_systolic,
-      diastolic: v.bp_diastolic,
-      sugar: v.sugar,
-      spo2: v.spo2,
-      heart_rate: v.heart_rate,
-      stage: v.stage,
-      patient_id: v.patient_id,
-    }));
+      const trend = vitals.map((v) => ({
+        date: v.scheduled_at,
+        temperature: v.temperature,
+        systolic: v.bp_systolic,
+        diastolic: v.bp_diastolic,
+        sugar: v.sugar,
+        spo2: v.spo2,
+        heart_rate: v.heart_rate,
+        stage: v.stage,
+        patient_id: v.patient_id,
+      }));
 
-    const statusBreakdown = ["scheduled", "active", "completed", "missed", "cancelled"].map(
-      (status) => ({
+      const statusBreakdown = [
+        "scheduled",
+        "active",
+        "completed",
+        "missed",
+        "cancelled",
+      ].map((status) => ({
         name: status.charAt(0).toUpperCase() + status.slice(1),
         value: visits.filter((v) => v.status === status).length,
-      }),
-    );
+      }));
 
-    res.json({
-      workspace,
-      patientCount: Number(patientCountResult.rows[0].count),
-      totalVisits: visits.length,
-      upcomingVisits: visits.filter((v) => v.status === "scheduled" && new Date(v.scheduled_at) > new Date()).length,
-      completedVisits: visits.filter((v) => v.status === "completed").length,
-      drugPerformance,
-      trend,
-      statusBreakdown,
-    });
-  } catch (error) {
-    console.error("Workspace dashboard error:", error);
-    res.status(500).json({ error: "Failed to load workspace dashboard" });
-  }
-});
+      res.json({
+        workspace,
+        patientCount: Number(patientCountResult.rows[0].count),
+        totalVisits: visits.length,
+        upcomingVisits: visits.filter(
+          (v) =>
+            v.status === "scheduled" && new Date(v.scheduled_at) > new Date(),
+        ).length,
+        completedVisits: visits.filter((v) => v.status === "completed").length,
+        drugPerformance,
+        trend,
+        statusBreakdown,
+      });
+    } catch (error) {
+      console.error("Workspace dashboard error:", error);
+      res.status(500).json({ error: "Failed to load workspace dashboard" });
+    }
+  },
+);
 
 app.get("/api/dashboard/patient", auth("patient"), async (req, res) => {
   try {
@@ -1515,41 +2082,51 @@ app.get("/api/dashboard/patient", auth("patient"), async (req, res) => {
   }
 });
 
-app.get("/api/workspaces/:workspaceId/patient-summary", auth("patient"), async (req, res) => {
-  try {
-    const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
-    if (!workspace) return;
+app.get(
+  "/api/workspaces/:workspaceId/patient-summary",
+  auth("patient"),
+  async (req, res) => {
+    try {
+      const workspace = await getWorkspaceOr404(req.params.workspaceId, res);
+      if (!workspace) return;
 
-    const enrolled = await db.query(
-      "SELECT id FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2",
-      [workspace.id, req.user.id],
-    );
-    if (enrolled.rows.length === 0) {
-      return res.status(403).json({ error: "Not enrolled in this workspace" });
-    }
+      const enrolled = await db.query(
+        "SELECT id FROM workspace_patients WHERE workspace_id = $1 AND patient_id = $2",
+        [workspace.id, req.user.id],
+      );
+      if (enrolled.rows.length === 0) {
+        return res
+          .status(403)
+          .json({ error: "Not enrolled in this workspace" });
+      }
 
-    const visitsResult = await db.query(
-      `SELECT * FROM scheduled_visits WHERE workspace_id = $1 AND patient_id = $2 ORDER BY scheduled_at ASC`,
-      [workspace.id, req.user.id],
-    );
+      const visitsResult = await db.query(
+        `SELECT * FROM scheduled_visits WHERE workspace_id = $1 AND patient_id = $2 ORDER BY scheduled_at ASC`,
+        [workspace.id, req.user.id],
+      );
 
-    const vitalsResult = await db.query(
-      `
+      const vitalsResult = await db.query(
+        `
       SELECT v.*, sv.scheduled_at
       FROM vitals v
       JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
       WHERE v.workspace_id = $1 AND v.patient_id = $2
       ORDER BY sv.scheduled_at ASC
       `,
-      [workspace.id, req.user.id],
-    );
+        [workspace.id, req.user.id],
+      );
 
-    res.json({ workspace, visits: visitsResult.rows, vitals: vitalsResult.rows });
-  } catch (error) {
-    console.error("Patient workspace summary error:", error);
-    res.status(500).json({ error: "Failed to fetch workspace summary" });
-  }
-});
+      res.json({
+        workspace,
+        visits: visitsResult.rows,
+        vitals: vitalsResult.rows,
+      });
+    } catch (error) {
+      console.error("Patient workspace summary error:", error);
+      res.status(500).json({ error: "Failed to fetch workspace summary" });
+    }
+  },
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -1557,237 +2134,125 @@ app.get("/api/workspaces/:workspaceId/patient-summary", auth("patient"), async (
 |--------------------------------------------------------------------------
 */
 
-io.on(
-  "connection",
-  (socket) => {
+io.on("connection", (socket) => {
+  console.log(`Socket connected: ${socket.id}`);
 
-    console.log(
-      `Socket connected: ${socket.id}`
-    );
+  /*
+   * JOIN ROOM
+   */
 
-    /*
-     * JOIN ROOM
-     */
+  socket.on("room:join", ({ roomCode, userId, userName, role }) => {
+    if (!roomCode) {
+      return;
+    }
 
-    socket.on(
-      "room:join",
-      ({
-        roomCode,
-        userId,
-        userName,
-        role,
-      }) => {
+    const roomKey = `room:${roomCode}`;
 
-        if (!roomCode) {
-          return;
-        }
+    socket.join(roomKey);
 
-        const roomKey =
-          `room:${roomCode}`;
+    socket.data = {
+      roomCode,
 
-        socket.join(
-          roomKey
-        );
+      userId,
 
-        socket.data = {
+      userName,
 
-          roomCode,
+      role,
+    };
 
-          userId,
+    socket.to(roomKey).emit("peer:joined", {
+      userId,
 
-          userName,
+      userName,
 
-          role,
+      role,
 
-        };
+      socketId: socket.id,
+    });
+  });
 
-        socket
-          .to(roomKey)
-          .emit(
-            "peer:joined",
-            {
-              userId,
+  /*
+   * WEBRTC OFFER
+   */
 
-              userName,
+  socket.on("webrtc:offer", ({ roomCode, offer, to }) => {
+    if (!to || !offer) {
+      return;
+    }
 
-              role,
+    io.to(to).emit("webrtc:offer", {
+      offer,
 
-              socketId:
-                socket.id,
-            }
-          );
-      }
-    );
+      from: socket.id,
 
-    /*
-     * WEBRTC OFFER
-     */
+      userName: socket.data?.userName,
+    });
+  });
 
-    socket.on(
-      "webrtc:offer",
-      ({
-        roomCode,
-        offer,
-        to,
-      }) => {
+  /*
+   * WEBRTC ANSWER
+   */
 
-        if (
-          !to ||
-          !offer
-        ) {
-          return;
-        }
+  socket.on("webrtc:answer", ({ answer, to }) => {
+    if (!to || !answer) {
+      return;
+    }
 
-        io.to(to).emit(
-          "webrtc:offer",
-          {
+    io.to(to).emit("webrtc:answer", {
+      answer,
 
-            offer,
+      from: socket.id,
+    });
+  });
 
-            from:
-              socket.id,
+  /*
+   * ICE CANDIDATE
+   */
 
-            userName:
-              socket.data
-                ?.userName,
+  socket.on("webrtc:ice-candidate", ({ candidate, to }) => {
+    if (!to || !candidate) {
+      return;
+    }
 
-          }
-        );
-      }
-    );
+    io.to(to).emit("webrtc:ice-candidate", {
+      candidate,
 
-    /*
-     * WEBRTC ANSWER
-     */
+      from: socket.id,
+    });
+  });
 
-    socket.on(
-      "webrtc:answer",
-      ({
-        answer,
-        to,
-      }) => {
+  /*
+   * LEAVE ROOM
+   */
 
-        if (
-          !to ||
-          !answer
-        ) {
-          return;
-        }
+  socket.on("room:leave", ({ roomCode }) => {
+    if (!roomCode) {
+      return;
+    }
 
-        io.to(to).emit(
-          "webrtc:answer",
-          {
+    const roomKey = `room:${roomCode}`;
 
-            answer,
+    socket.leave(roomKey);
 
-            from:
-              socket.id,
+    socket.to(roomKey).emit("peer:left", {
+      socketId: socket.id,
+    });
+  });
 
-          }
-        );
-      }
-    );
+  /*
+   * DISCONNECT
+   */
 
-    /*
-     * ICE CANDIDATE
-     */
+  socket.on("disconnect", () => {
+    console.log(`Socket disconnected: ${socket.id}`);
 
-    socket.on(
-      "webrtc:ice-candidate",
-      ({
-        candidate,
-        to,
-      }) => {
-
-        if (
-          !to ||
-          !candidate
-        ) {
-          return;
-        }
-
-        io.to(to).emit(
-          "webrtc:ice-candidate",
-          {
-
-            candidate,
-
-            from:
-              socket.id,
-
-          }
-        );
-      }
-    );
-
-    /*
-     * LEAVE ROOM
-     */
-
-    socket.on(
-      "room:leave",
-      ({
-        roomCode,
-      }) => {
-
-        if (!roomCode) {
-          return;
-        }
-
-        const roomKey =
-          `room:${roomCode}`;
-
-        socket.leave(
-          roomKey
-        );
-
-        socket
-          .to(roomKey)
-          .emit(
-            "peer:left",
-            {
-              socketId:
-                socket.id,
-            }
-          );
-      }
-    );
-
-    /*
-     * DISCONNECT
-     */
-
-    socket.on(
-      "disconnect",
-      () => {
-
-        console.log(
-          `Socket disconnected: ${socket.id}`
-        );
-
-        if (
-          socket.data
-            ?.roomCode
-        ) {
-
-          socket
-            .to(
-              `room:${socket.data.roomCode}`
-            )
-            .emit(
-              "peer:left",
-              {
-                socketId:
-                  socket.id,
-              }
-            );
-
-        }
-      }
-    );
-
-  }
-);
+    if (socket.data?.roomCode) {
+      socket.to(`room:${socket.data.roomCode}`).emit("peer:left", {
+        socketId: socket.id,
+      });
+    }
+  });
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -1802,17 +2267,11 @@ io.on(
 |--------------------------------------------------------------------------
 */
 
-app.use(
-  "/api",
-  (req, res) => {
-
-    res.status(404).json({
-      error:
-        `API route not found: ${req.method} ${req.originalUrl}`,
-    });
-
-  }
-);
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    error: `API route not found: ${req.method} ${req.originalUrl}`,
+  });
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -1820,19 +2279,9 @@ app.use(
 |--------------------------------------------------------------------------
 */
 
-const clientDist =
-  path.join(
-    __dirname,
-    "..",
-    "client",
-    "dist"
-  );
+const clientDist = path.join(__dirname, "..", "client", "dist");
 
-app.use(
-  express.static(
-    clientDist
-  )
-);
+app.use(express.static(clientDist));
 
 /*
 |--------------------------------------------------------------------------
@@ -1840,52 +2289,27 @@ app.use(
 |--------------------------------------------------------------------------
 */
 
-app.get(
-  "*",
-  (req, res, next) => {
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    return next();
+  }
 
-    if (
-      req.path.startsWith(
-        "/api"
-      )
-    ) {
+  const indexFile = path.join(clientDist, "index.html");
 
-      return next();
+  res.sendFile(indexFile, (error) => {
+    if (error) {
+      console.error("Client build not found:", error.message);
 
-    }
-
-    const indexFile =
-      path.join(
-        clientDist,
-        "index.html"
-      );
-
-    res.sendFile(
-      indexFile,
-      (error) => {
-
-        if (error) {
-
-          console.error(
-            "Client build not found:",
-            error.message
-          );
-
-          res.status(404).send(
-            `
+      res.status(404).send(
+        `
             <h2>CareThread server is running.</h2>
             <p>Client build was not found.</p>
             <p>Run <b>npm run build</b> inside the client folder.</p>
-            `
-          );
-
-        }
-
-      }
-    );
-
-  }
-);
+            `,
+      );
+    }
+  });
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -1893,17 +2317,10 @@ app.get(
 |--------------------------------------------------------------------------
 */
 
-server.listen(
-  PORT,
-  () => {
+server.listen(PORT, () => {
+  console.log(`CareThread server running on port ${PORT}`);
 
-    console.log(
-      `CareThread server running on port ${PORT}`
-    );
+  console.log(`API: http://localhost:${PORT}/api/health`);
 
-    console.log(
-      `API: http://localhost:${PORT}/api/health`
-    );
-
-  }
-);
+  visitAlertingJob.start();
+});

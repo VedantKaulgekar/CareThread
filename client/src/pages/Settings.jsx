@@ -1,40 +1,44 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { api, useAuth } from '../AuthContext.jsx';
-import DashboardNav from '../components/DashboardNav.jsx';
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, useAuth } from "../AuthContext.jsx";
+import DashboardNav from "../components/DashboardNav.jsx";
 
 export default function Settings() {
   const { user, token, login } = useAuth();
   const navigate = useNavigate();
 
-  const [name, setName] = useState(user?.name || '');
-  const [phone, setPhone] = useState(user?.phone || '');
-  const [specialization, setSpecialization] = useState(user?.specialization || '');
-  const [medicalConditions, setMedicalConditions] = useState(user?.medical_conditions || '');
+  const [name, setName] = useState(user?.name || "");
+  const [phone, setPhone] = useState(user?.phone || "");
+  const [specialization, setSpecialization] = useState(
+    user?.specialization || "",
+  );
+  const [medicalConditions, setMedicalConditions] = useState(
+    user?.medical_conditions || "",
+  );
 
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
-  const [profileMsg, setProfileMsg] = useState('');
-  const [profileError, setProfileError] = useState('');
-  const [passwordMsg, setPasswordMsg] = useState('');
-  const [passwordError, setPasswordError] = useState('');
+  const [profileMsg, setProfileMsg] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [passwordMsg, setPasswordMsg] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
 
   async function handleProfileSubmit(e) {
     e.preventDefault();
-    setProfileError('');
-    setProfileMsg('');
+    setProfileError("");
+    setProfileMsg("");
     setSavingProfile(true);
     try {
       const body = { name, phone };
-      if (user?.role === 'doctor') body.specialization = specialization;
-      if (user?.role === 'patient') body.medical_conditions = medicalConditions;
+      if (user?.role === "doctor") body.specialization = specialization;
+      if (user?.role === "patient") body.medical_conditions = medicalConditions;
 
-      const data = await api('/auth/me', { method: 'PUT', token, body });
+      const data = await api("/auth/me", { method: "PUT", token, body });
       login(token, data.user);
-      setProfileMsg('Profile updated.');
+      setProfileMsg("Profile updated.");
     } catch (err) {
       setProfileError(err.message);
     } finally {
@@ -44,18 +48,18 @@ export default function Settings() {
 
   async function handlePasswordSubmit(e) {
     e.preventDefault();
-    setPasswordError('');
-    setPasswordMsg('');
+    setPasswordError("");
+    setPasswordMsg("");
     setSavingPassword(true);
     try {
-      await api('/auth/password', {
-        method: 'PUT',
+      await api("/auth/password", {
+        method: "PUT",
         token,
         body: { currentPassword, newPassword },
       });
-      setPasswordMsg('Password changed successfully.');
-      setCurrentPassword('');
-      setNewPassword('');
+      setPasswordMsg("Password changed successfully.");
+      setCurrentPassword("");
+      setNewPassword("");
     } catch (err) {
       setPasswordError(err.message);
     } finally {
@@ -81,30 +85,49 @@ export default function Settings() {
 
             <div className="field">
               <label>Full name</label>
-              <input required value={name} onChange={e => setName(e.target.value)} />
+              <input
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
             </div>
 
             <div className="field">
               <label>Phone number</label>
-              <input value={phone} onChange={e => setPhone(e.target.value)} maxLength={10} />
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                maxLength={10}
+              />
             </div>
 
-            {user?.role === 'doctor' && (
+            {user?.role === "doctor" && (
               <div className="field">
                 <label>Specialization</label>
-                <input value={specialization} onChange={e => setSpecialization(e.target.value)} />
+                <input
+                  value={specialization}
+                  onChange={(e) => setSpecialization(e.target.value)}
+                />
               </div>
             )}
 
-            {user?.role === 'patient' && (
+            {user?.role === "patient" && (
               <div className="field">
                 <label>Existing medical conditions / current medication</label>
-                <textarea rows={3} value={medicalConditions} onChange={e => setMedicalConditions(e.target.value)} />
+                <textarea
+                  rows={3}
+                  value={medicalConditions}
+                  onChange={(e) => setMedicalConditions(e.target.value)}
+                />
               </div>
             )}
 
-            <button className="btn btn-primary" disabled={savingProfile} style={{ marginTop: 8 }}>
-              {savingProfile ? 'Saving…' : 'Save profile'}
+            <button
+              className="btn btn-primary"
+              disabled={savingProfile}
+              style={{ marginTop: 8 }}
+            >
+              {savingProfile ? "Saving…" : "Save profile"}
             </button>
           </form>
 
@@ -116,16 +139,31 @@ export default function Settings() {
 
             <div className="field">
               <label>Current password</label>
-              <input type="password" required value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} />
+              <input
+                type="password"
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+              />
             </div>
 
             <div className="field">
               <label>New password</label>
-              <input type="password" required minLength={6} value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+              />
             </div>
 
-            <button className="btn btn-primary" disabled={savingPassword} style={{ marginTop: 8 }}>
-              {savingPassword ? 'Updating…' : 'Update password'}
+            <button
+              className="btn btn-primary"
+              disabled={savingPassword}
+              style={{ marginTop: 8 }}
+            >
+              {savingPassword ? "Updating…" : "Update password"}
             </button>
           </form>
         </div>
@@ -135,12 +173,25 @@ export default function Settings() {
 }
 
 const successBoxStyle = {
-  background: '#dcfce7', color: '#166534', border: '1px solid #86efac',
-  borderRadius: 8, padding: '10px 14px', fontSize: 13, marginBottom: 16,
+  background: "#dcfce7",
+  color: "#166534",
+  border: "1px solid #86efac",
+  borderRadius: 8,
+  padding: "10px 14px",
+  fontSize: 13,
+  marginBottom: 16,
 };
 
 const wrap = {
-  minHeight: '100vh', display: 'flex', justifyContent: 'center',
-  padding: '48px 24px',
+  minHeight: "100vh",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  padding: "48px 24px",
 };
-const panel = { width: 560, padding: 36, boxShadow: 'var(--shadow-lg)', height: 'fit-content' };
+const panel = {
+  width: 560,
+  padding: 36,
+  boxShadow: "var(--shadow-lg)",
+  height: "fit-content",
+};

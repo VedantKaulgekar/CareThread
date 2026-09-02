@@ -16,8 +16,13 @@ export default function PatientVitalsForm({ scheduledVisitId, onSaved }) {
     setForm(f => ({ ...f, [field]: value }));
   }
 
+  const hasAnyReading = Object.entries(form).some(
+    ([key, val]) => key !== 'stage' && val.toString().trim() !== ''
+  );
+
   async function handleSubmit(e) {
     e.preventDefault();
+    if (!hasAnyReading) return;
     setSaving(true);
     setSavedMsg('');
     try {
@@ -92,9 +97,14 @@ export default function PatientVitalsForm({ scheduledVisitId, onSaved }) {
         </div>
       </div>
 
-      <button className="btn btn-teal btn-block" disabled={saving}>
+      <button className="btn btn-teal btn-block" disabled={saving || !hasAnyReading}>
         {saving ? 'Saving…' : 'Submit my readings'}
       </button>
+      {!hasAnyReading && (
+        <p className="text-muted text-sm" style={{ marginTop: 8, textAlign: 'center' }}>
+          Enter at least one reading before submitting.
+        </p>
+      )}
       {savedMsg && <p style={{ color: 'var(--teal)', fontSize: 13, marginTop: 8, textAlign: 'center', fontWeight: 600 }}>{savedMsg}</p>}
     </form>
   );
