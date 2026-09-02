@@ -1,61 +1,162 @@
 /**
- * Intake Agent — Feature 1 from the CareThread solution design, adapted
- * to fit CareThread's actual architecture.
+ * Intake Agent — CareThread
  *
- * The original design assumed routing to one of several specialists.
- * In CareThread, a workspace already has exactly one doctor tied to one
- * drug trial, so "routing to the right specialist" doesn't apply the
- * same way. What still applies, and still matters: a patient between
- * scheduled visits can describe a concern, and the system should
- * classify how urgent it is — low/medium/high — rather than making the
- * patient guess whether it's worth flagging, and rather than making the
- * doctor manually triage every message with equal priority.
+ * Classifies a patient's free-text concern as:
  *
- * Uses the same AMIE-inspired confidence pattern as the rest of
- * CareThread: below a confidence threshold, it returns "unclear"
- * instead of guessing, so a human reviews it rather than the system
- * silently mis-triaging something serious.
+ *   low
+ *   medium
+ *   high
+ *   unclear
+ *
+ * The agent does NOT diagnose, prescribe, or provide medical advice.
+ *
+ * It uses Groq Structured Outputs so the response always follows
+ * the expected JSON schema.
  */
 
 const { completeJSON } = require("./groqClient");
 
-const SYSTEM_PROMPT = `You triage a patient's free-text message about how they're feeling during a clinical drug trial, between their scheduled visits.
+const SYSTEM_PROMPT = `You are the CareThread patient-intake urgency classifier.
 
-You classify urgency only. You never diagnose, never suggest a remedy, never offer medical advice.
+Your ONLY task is to classify the urgency of a patient's message during a clinical drug trial.
 
-Urgency levels:
-- "high": symptoms suggesting a need for prompt medical attention (e.g. severe or worsening symptoms, anything suggesting a serious reaction)
-- "medium": a real concern worth the doctor's attention soon, but not urgent
-- "low": a minor question, or reporting a mild/expected effect
-- "unclear": you cannot confidently classify this from the text alone
+You do NOT diagnose.
+You do NOT prescribe.
+You do NOT recommend treatment.
+You do NOT give medical advice.
 
-Return strict JSON:
-{
-  "urgency": "high" | "medium" | "low" | "unclear",
-  "reasoning": "one short sentence explaining why, quoting or paraphrasing the specific thing that drove the classification",
-  "confidence": number between 0 and 1
-}
+Classify the patient's message into exactly one of these categories:
 
-If your confidence would be below 0.6, return "unclear" as the urgency instead of guessing.`;
+HIGH:
+Use high when the patient describes severe, serious, rapidly worsening, emergency, or potentially dangerous symptoms.
+
+Also treat explicit urgent language as a strong signal of high urgency when the patient clearly asks for immediate or urgent help, for example:
+- "I need help urgently"
+- "This is an emergency"
+- "I need help immediately"
+- "Please help me right now"
+
+MEDIUM:
+Use medium when the patient describes a genuine health concern that should receive the doctor's attention soon but does not appear immediately dangerous.
+
+LOW:
+Use low for mild symptoms, minor questions, or mild/expected effects.
+
+UNCLEAR:
+Use unclear only when the message does not provide enough information to determine urgency and does not contain a clear urgent or emergency signal.
+
+Important:
+- Do not diagnose the patient.
+- Do not recommend what the patient should do.
+- Do not provide medical advice.
+- Base the classification only on the patient's message.
+- Give one short reasoning sentence.
+- Confidence must be between 0 and 1.
+- If confidence is below 0.6, use "unclear" unless the message contains an explicit urgent/emergency signal.`;
 
 const CONFIDENCE_THRESHOLD = 0.6;
 
 async function classifyConcern(concernText) {
+  const text = String(concernText || "").trim();
+
+  if (!text) {
+    return {
+      urgency: "unclear",
+      reasoning: "No patient message was provided.",
+      confidence: 1,
+    };
+  }
+
   const result = await completeJSON({
     system: SYSTEM_PROMPT,
-    prompt: `Patient message:\n\n"${concernText}"\n\nClassify now.`,
-    temperature: 0.2,
-    maxTokens: 200,
+
+    prompt: `Classify this patient message:
+
+"${text}"`,
+
+    temperature: 0.1,
+
+    // Enough space for GPT-OSS reasoning + final structured JSON.
+    maxTokens: 500,
+
+    // Keep reasoning effort low because this is a simple
+    // four-category classification task.
+    reasoningEffort: "low",
+
+    schema: {
+      type: "object",
+
+      properties: {
+        urgency: {
+          type: "string",
+          enum: ["low", "medium", "high", "unclear"],
+        },
+
+        reasoning: {
+          type: "string",
+        },
+
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+        },
+      },
+
+      required: ["urgency", "reasoning", "confidence"],
+
+      additionalProperties: false,
+    },
+
+    schemaName: "intake_classification",
   });
 
-  const confidence = typeof result.confidence === "number" ? result.confidence : 0;
-  const urgency = confidence >= CONFIDENCE_THRESHOLD ? result.urgency : "unclear";
+  const confidence =
+    typeof result.confidence === "number"
+      ? Math.max(0, Math.min(1, result.confidence))
+      : 0;
+
+  const explicitUrgentLanguage =
+    /\b(urgent|urgently|emergency|immediately|right now|asap|critical|severe)\b/i.test(
+      text,
+    );
+
+  let urgency = ["low", "medium", "high", "unclear"].includes(result.urgency)
+    ? result.urgency
+    : "unclear";
+
+  /*
+   * Confidence rule:
+   *
+   * Normally, confidence below 0.6 becomes "unclear".
+   *
+   * However, an explicit urgent/emergency request is preserved
+   * as high urgency because the patient has clearly indicated
+   * that they need immediate attention.
+   */
+  if (confidence < CONFIDENCE_THRESHOLD) {
+    urgency = explicitUrgentLanguage ? "high" : "unclear";
+  }
+
+  /*
+   * If the model itself identified an explicit urgent signal
+   * as high, keep it high even if confidence is close to the
+   * threshold.
+   */
+  if (explicitUrgentLanguage && urgency === "unclear") {
+    urgency = "high";
+  }
 
   return {
-    urgency: ["low", "medium", "high", "unclear"].includes(urgency) ? urgency : "unclear",
-    reasoning: result.reasoning || "",
+    urgency,
+
+    reasoning: typeof result.reasoning === "string" ? result.reasoning : "",
+
     confidence,
   };
 }
 
-module.exports = { classifyConcern, CONFIDENCE_THRESHOLD };
+module.exports = {
+  classifyConcern,
+  CONFIDENCE_THRESHOLD,
+};
