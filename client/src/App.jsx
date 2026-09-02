@@ -16,6 +16,7 @@ import VisitRoom from "./pages/VisitRoom.jsx";
 import Settings from "./pages/Settings.jsx";
 import PatientAnalyticsDashboard from "./pages/PatientAnalyticsDashboard.jsx";
 import DoctorAnalyticsDashboard from "./pages/DoctorAnalyticsDashboard.jsx";
+import DoctorPatients from "./pages/DoctorPatients.jsx";
 
 function Protected({ role, children }) {
   const { user } = useAuth();
@@ -115,6 +116,14 @@ export default function App() {
         element={
           <Protected role="doctor">
             <DoctorAnalyticsDashboard />
+          </Protected>
+        }
+      />
+      <Route
+        path="/doctor/patients"
+        element={
+          <Protected role="doctor">
+            <DoctorPatients />
           </Protected>
         }
       />

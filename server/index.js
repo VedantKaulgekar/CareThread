@@ -2262,6 +2262,19 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       [req.user.id],
     );
 
+    const dosageVitalsResult = await db.query(
+      `
+      SELECT v.patient_id, u.name AS patient_name, w.drug_name, v.stage,
+             v.bp_systolic, v.bp_diastolic, v.heart_rate, v.spo2, v.sugar
+      FROM vitals v
+      JOIN workspaces w ON w.id = v.workspace_id
+      JOIN users u ON u.id = v.patient_id
+      WHERE w.doctor_id = $1 AND v.stage IN ('pre_dosage', 'post_dosage')
+      `,
+      [req.user.id],
+    );
+    const dosageVitals = dosageVitalsResult.rows;
+
     const recentJoinsResult = await db.query(
       `
       SELECT wp.joined_at AS at, u.name AS patient_name, w.title AS workspace_title, 'enrollment' AS type
@@ -2306,6 +2319,65 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       .sort((a, b) => new Date(b.at) - new Date(a.at))
       .slice(0, 15);
 
+    // Patient-reported concerns (via the "Report a concern" flow, AI-triaged
+    // for urgency) and doctor visit notes, merged into one feed so a doctor
+    // can scan for side effects / observations across all their patients
+    // without digging into each workspace individually.
+    const concernsResult = await db.query(
+      `
+      SELECT vr.patient_id, u.name AS patient_name, vr.concern_text, vr.urgency,
+             vr.urgency_reasoning, vr.created_at AS at, w.title AS workspace_title
+      FROM visit_requests vr
+      JOIN workspaces w ON w.id = vr.workspace_id
+      JOIN users u ON u.id = vr.patient_id
+      WHERE w.doctor_id = $1
+      ORDER BY vr.created_at DESC
+      LIMIT 50
+      `,
+      [req.user.id],
+    );
+
+    const doctorNotesResult = await db.query(
+      `
+      SELECT v.patient_id, u.name AS patient_name, v.doctor_notes AS note_text,
+             v.doctor_submitted_at AS at, w.title AS workspace_title, v.stage
+      FROM vitals v
+      JOIN workspaces w ON w.id = v.workspace_id
+      JOIN users u ON u.id = v.patient_id
+      WHERE w.doctor_id = $1 AND v.doctor_notes IS NOT NULL AND v.doctor_notes <> ''
+      ORDER BY v.doctor_submitted_at DESC
+      LIMIT 50
+      `,
+      [req.user.id],
+    );
+
+    const patientObservations = [
+      ...concernsResult.rows.map((r) => ({
+        patientId: r.patient_id,
+        patientName: r.patient_name,
+        source: "patient",
+        kind: "concern",
+        text: r.concern_text,
+        urgency: r.urgency,
+        urgencyReasoning: r.urgency_reasoning,
+        workspaceTitle: r.workspace_title,
+        at: r.at,
+      })),
+      ...doctorNotesResult.rows.map((r) => ({
+        patientId: r.patient_id,
+        patientName: r.patient_name,
+        source: "doctor",
+        kind: "note",
+        text: r.note_text,
+        urgency: null,
+        workspaceTitle: r.workspace_title,
+        at: r.at,
+      })),
+    ]
+      .filter((o) => o.at && o.text)
+      .sort((a, b) => new Date(b.at) - new Date(a.at))
+      .slice(0, 30);
+
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
@@ -2328,36 +2400,81 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
     const completedAppointments = visits.filter((v) => v.status === "completed").length;
     const cancelledAppointments = visits.filter((v) => v.status === "cancelled").length;
 
-    const growthMap = {};
-    patients.forEach((p) => {
-      const key = new Date(p.joined_at).toISOString().slice(0, 7);
-      growthMap[key] = (growthMap[key] || 0) + 1;
-    });
-    const patientGrowth = Object.entries(growthMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, count]) => ({ month, count }));
+    const DOSAGE_METRICS = [
+      { key: "bp_systolic", label: "BP Systolic" },
+      { key: "bp_diastolic", label: "BP Diastolic" },
+      { key: "heart_rate", label: "Heart Rate" },
+      { key: "spo2", label: "SpO2" },
+      { key: "sugar", label: "Glucose" },
+    ];
+    const avgOf = (arr) => (arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null);
+    const preVitals = dosageVitals.filter((v) => v.stage === "pre_dosage");
+    const postVitals = dosageVitals.filter((v) => v.stage === "post_dosage");
 
-    const apptMap = {};
-    visits.forEach((v) => {
-      const key = new Date(v.scheduled_at).toISOString().slice(0, 7);
-      apptMap[key] = (apptMap[key] || 0) + 1;
-    });
-    const appointmentTrend = Object.entries(apptMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, count]) => ({ month, count }));
+    const dosageImpact = DOSAGE_METRICS.map((m) => ({
+      metric: m.label,
+      metricKey: m.key,
+      pre: avgOf(preVitals.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+      post: avgOf(postVitals.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+    }));
 
-    const genderCounts = {};
-    const ageBuckets = { "0-17": 0, "18-34": 0, "35-49": 0, "50-64": 0, "65+": 0 };
-    patients.forEach((p) => {
-      if (p.gender) genderCounts[p.gender] = (genderCounts[p.gender] || 0) + 1;
-      if (p.age !== null && p.age !== undefined) {
-        if (p.age < 18) ageBuckets["0-17"]++;
-        else if (p.age < 35) ageBuckets["18-34"]++;
-        else if (p.age < 50) ageBuckets["35-49"]++;
-        else if (p.age < 65) ageBuckets["50-64"]++;
-        else ageBuckets["65+"]++;
-      }
+    const drugNamesForDosage = [...new Set(dosageVitals.map((v) => v.drug_name))];
+    const dosageImpactByDrug = [];
+    drugNamesForDosage.forEach((drug) => {
+      const pre = preVitals.filter((r) => r.drug_name === drug);
+      const post = postVitals.filter((r) => r.drug_name === drug);
+      DOSAGE_METRICS.forEach((m) => {
+        dosageImpactByDrug.push({
+          drug,
+          metric: m.label,
+          metricKey: m.key,
+          pre: avgOf(pre.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+          post: avgOf(post.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+        });
+      });
     });
+
+    const patientResponseOverview = [];
+    patients.forEach((p) => {
+      const rows = dosageVitals.filter((v) => v.patient_id === p.id);
+      const pre = rows.filter((r) => r.stage === "pre_dosage");
+      const post = rows.filter((r) => r.stage === "post_dosage");
+      DOSAGE_METRICS.forEach((m) => {
+        const preAvg = avgOf(pre.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined));
+        const postAvg = avgOf(post.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined));
+        const change = preAvg !== null && postAvg !== null ? +(postAvg - preAvg).toFixed(1) : null;
+        patientResponseOverview.push({
+          patientId: p.id,
+          patientName: p.name,
+          metric: m.label,
+          metricKey: m.key,
+          pre: preAvg,
+          post: postAvg,
+          change,
+        });
+      });
+    });
+
+    // Example clinical thresholds used to flag an out-of-range post-dosage reading.
+    const ABNORMAL_CHECKS = {
+      spo2: (v) => v < 95,
+      heart_rate: (v) => v > 100,
+      bp_systolic: (v) => v > 140,
+      bp_diastolic: (v) => v > 90,
+      sugar: (v) => v > 140,
+    };
+    const abnormalReadingsOverview = patients
+      .map((p) => {
+        const rows = dosageVitals.filter((v) => v.patient_id === p.id && v.stage === "post_dosage");
+        let abnormalCount = 0;
+        rows.forEach((r) => {
+          Object.entries(ABNORMAL_CHECKS).forEach(([key, check]) => {
+            if (r[key] !== null && r[key] !== undefined && check(r[key])) abnormalCount++;
+          });
+        });
+        return { patientId: p.id, patientName: p.name, abnormalCount, totalPostReadings: rows.length };
+      })
+      .sort((a, b) => b.abnormalCount - a.abnormalCount);
 
     const drugCounts = {};
     workspacesResult.rows.forEach((w) => {
@@ -2392,8 +2509,15 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
         total: totalPatients,
         active: activePatients,
         new: newPatients,
-        growth: patientGrowth,
-        demographics: { gender: genderCounts, ageBuckets },
+        list: patients.map((p) => ({
+          id: p.id,
+          name: p.name,
+          email: p.email,
+          age: p.age,
+          gender: p.gender,
+          enrollmentStatus: p.enrollment_status,
+          joinedAt: p.joined_at,
+        })),
         frequentlyVisited: frequentPatients,
       },
       appointments: {
@@ -2401,8 +2525,12 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
         upcoming: upcomingAppointments,
         completed: completedAppointments,
         cancelled: cancelledAppointments,
-        trend: appointmentTrend,
       },
+      dosageImpact,
+      dosageImpactByDrug,
+      patientResponseOverview,
+      patientObservations,
+      abnormalReadingsOverview,
       conditions: {
         byDrug: Object.entries(drugCounts).map(([name, value]) => ({ name, value })),
         byConditionText: Object.entries(conditionCounts)
@@ -2421,6 +2549,49 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
   } catch (error) {
     console.error("Doctor analytics dashboard error:", error);
     res.status(500).json({ error: "Failed to load doctor analytics" });
+  }
+});
+
+app.get("/api/dashboard/doctor/patients/:patientId/vitals", auth("doctor"), async (req, res) => {
+  try {
+    const enrolled = await db.query(
+      `
+      SELECT 1
+      FROM workspace_patients wp
+      JOIN workspaces w ON w.id = wp.workspace_id
+      WHERE w.doctor_id = $1 AND wp.patient_id = $2
+      LIMIT 1
+      `,
+      [req.user.id, req.params.patientId],
+    );
+    if (enrolled.rows.length === 0) {
+      return res.status(403).json({ error: "This patient is not enrolled in any of your workspaces" });
+    }
+
+    const patientResult = await db.query(
+      `SELECT id, name, email, age, gender, medical_conditions FROM users WHERE id = $1 AND role = 'patient'`,
+      [req.params.patientId],
+    );
+    if (patientResult.rows.length === 0) {
+      return res.status(404).json({ error: "Patient not found" });
+    }
+
+    const vitalsResult = await db.query(
+      `
+      SELECT v.*, sv.scheduled_at, sv.title AS visit_title, w.title AS workspace_title, w.drug_name
+      FROM vitals v
+      JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
+      JOIN workspaces w ON w.id = v.workspace_id
+      WHERE v.patient_id = $1 AND w.doctor_id = $2
+      ORDER BY sv.scheduled_at DESC, v.stage ASC
+      `,
+      [req.params.patientId, req.user.id],
+    );
+
+    res.json({ patient: patientResult.rows[0], vitals: vitalsResult.rows });
+  } catch (error) {
+    console.error("Patient vitals drill-down error:", error);
+    res.status(500).json({ error: "Failed to load patient observations" });
   }
 });
 

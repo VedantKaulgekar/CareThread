@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 
-export default function SearchableTable({ columns, rows, searchKeys, emptyText = 'No results.', searchPlaceholder = 'Search…' }) {
+export default function SearchableTable({ columns, rows, searchKeys, emptyText = 'No results.', searchPlaceholder = 'Search…', onRowClick }) {
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
@@ -22,7 +22,11 @@ export default function SearchableTable({ columns, rows, searchKeys, emptyText =
             </thead>
             <tbody>
               {filtered.map((row, i) => (
-                <tr key={row.id ?? row.patient_id ?? i} style={trStyle}>
+                <tr
+                  key={row.id ?? row.patient_id ?? i}
+                  style={onRowClick ? { ...trStyle, cursor: 'pointer' } : trStyle}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                >
                   {columns.map(col => <td key={col.key} style={tdStyle}>{col.render ? col.render(row) : row[col.key]}</td>)}
                 </tr>
               ))}

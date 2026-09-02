@@ -27,6 +27,15 @@ export default function DashboardNav({ title }) {
             <span className="brand-mark">C</span>CareThread
           </Link>
           <div className="flex items-center gap-16">
+            {user && user.role === "doctor" && (
+              <Link
+                to="/doctor/patients"
+                className="text-sm"
+                style={{ fontWeight: 600, color: "var(--ink-soft)" }}
+              >
+                Patients
+              </Link>
+            )}
             {user && (
               <Link
                 to={

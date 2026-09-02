@@ -205,6 +205,8 @@ input, select, textarea {
 .badge-open { background: var(--amber-light); color: var(--amber); }
 .badge-active { background: var(--teal-light); color: var(--teal); }
 .badge-completed { background: var(--line-soft); color: var(--ink-soft); }
+.badge-coral { background: var(--coral-light); color: var(--coral); }
+.badge-amber { background: var(--amber-light); color: var(--amber); }
 .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ---------- Utility ---------- */
