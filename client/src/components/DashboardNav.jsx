@@ -27,6 +27,19 @@ export default function DashboardNav({ title }) {
             <span className="brand-mark">C</span>CareThread
           </Link>
           <div className="flex items-center gap-16">
+            {user && (
+              <Link
+                to={
+                  user.role === "doctor"
+                    ? "/doctor/analytics"
+                    : "/patient/analytics"
+                }
+                className="text-sm"
+                style={{ fontWeight: 600, color: "var(--ink-soft)" }}
+              >
+                Analytics
+              </Link>
+            )}
             {title && <span className="text-muted text-sm">{title}</span>}
             <div style={{ position: "relative" }} ref={menuRef}>
               <div

@@ -2081,6 +2081,348 @@ app.get("/api/dashboard/patient", auth("patient"), async (req, res) => {
     res.status(500).json({ error: "Failed to load patient dashboard" });
   }
 });
+/*
+|--------------------------------------------------------------------------
+| PATIENT ANALYTICS DASHBOARD
+|--------------------------------------------------------------------------
+*/
+
+app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) => {
+  try {
+    const visitsResult = await db.query(
+      `
+      SELECT sv.*, w.title AS workspace_title, w.drug_name, w.status AS workspace_status, d.name AS doctor_name
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      JOIN users d ON d.id = sv.doctor_id
+      WHERE sv.patient_id = $1
+      ORDER BY sv.scheduled_at ASC
+      `,
+      [req.user.id],
+    );
+    const visits = visitsResult.rows;
+
+    const vitalsResult = await db.query(
+      `
+      SELECT v.*, sv.scheduled_at, w.title AS workspace_title, w.drug_name
+      FROM vitals v
+      JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
+      JOIN workspaces w ON w.id = v.workspace_id
+      WHERE v.patient_id = $1
+      ORDER BY sv.scheduled_at ASC
+      `,
+      [req.user.id],
+    );
+    const vitals = vitalsResult.rows;
+
+    const medsResult = await db.query(
+      `
+      SELECT DISTINCT ON (w.id)
+        w.id AS workspace_id, w.title AS workspace_title, w.drug_name, w.status AS workspace_status,
+        v.dosage_given, v.doctor_notes, v.doctor_submitted_at
+      FROM workspace_patients wp
+      JOIN workspaces w ON w.id = wp.workspace_id
+      LEFT JOIN vitals v ON v.workspace_id = w.id AND v.patient_id = wp.patient_id AND v.dosage_given IS NOT NULL
+      WHERE wp.patient_id = $1 AND wp.status = 'active'
+      ORDER BY w.id, v.doctor_submitted_at DESC NULLS LAST
+      `,
+      [req.user.id],
+    );
+
+    const historyResult = await db.query(
+      `
+      SELECT sv.id, sv.title, sv.scheduled_at, sv.completed_at, sv.ai_summary,
+             w.title AS workspace_title, w.drug_name, d.name AS doctor_name,
+             (
+               SELECT v.doctor_notes FROM vitals v
+               WHERE v.scheduled_visit_id = sv.id AND v.doctor_notes IS NOT NULL
+               ORDER BY v.doctor_submitted_at DESC LIMIT 1
+             ) AS doctor_notes,
+             (
+               SELECT v.dosage_given FROM vitals v
+               WHERE v.scheduled_visit_id = sv.id AND v.dosage_given IS NOT NULL
+               ORDER BY v.doctor_submitted_at DESC LIMIT 1
+             ) AS dosage_given
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      JOIN users d ON d.id = sv.doctor_id
+      WHERE sv.patient_id = $1 AND sv.status = 'completed'
+      ORDER BY sv.completed_at DESC
+      `,
+      [req.user.id],
+    );
+
+    const now = new Date();
+    const totalAppointments = visits.length;
+    const upcomingAppointments = visits.filter(
+      (v) => ["scheduled", "active"].includes(v.status) && new Date(v.scheduled_at) > now,
+    ).length;
+    const completedAppointments = visits.filter((v) => v.status === "completed").length;
+    const cancelledAppointments = visits.filter((v) => v.status === "cancelled").length;
+    const missedAppointments = visits.filter((v) => v.status === "missed").length;
+
+    const apptMap = {};
+    visits.forEach((v) => {
+      const key = new Date(v.scheduled_at).toISOString().slice(0, 7);
+      apptMap[key] = (apptMap[key] || 0) + 1;
+    });
+    const appointmentTrend = Object.entries(apptMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, count]) => ({ month, count }));
+
+    const vitalsTrend = vitals.map((v) => ({
+      date: v.scheduled_at,
+      stage: v.stage,
+      workspace: v.workspace_title,
+      temperature: v.temperature,
+      systolic: v.bp_systolic,
+      diastolic: v.bp_diastolic,
+      sugar: v.sugar,
+      spo2: v.spo2,
+      heart_rate: v.heart_rate,
+    }));
+
+    res.json({
+      appointments: {
+        total: totalAppointments,
+        upcoming: upcomingAppointments,
+        completed: completedAppointments,
+        cancelled: cancelledAppointments,
+        missed: missedAppointments,
+        list: visits,
+        trend: appointmentTrend,
+      },
+      vitals: {
+        trend: vitalsTrend,
+      },
+      medications: medsResult.rows,
+      medicalHistory: historyResult.rows,
+    });
+  } catch (error) {
+    console.error("Patient analytics dashboard error:", error);
+    res.status(500).json({ error: "Failed to load patient analytics" });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| DOCTOR ANALYTICS DASHBOARD
+|--------------------------------------------------------------------------
+*/
+
+app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
+  try {
+    const patientsResult = await db.query(
+      `
+      SELECT DISTINCT ON (u.id)
+        u.id, u.name, u.email, u.age, u.gender, u.medical_conditions,
+        wp.joined_at, wp.status AS enrollment_status
+      FROM workspace_patients wp
+      JOIN workspaces w ON w.id = wp.workspace_id
+      JOIN users u ON u.id = wp.patient_id
+      WHERE w.doctor_id = $1
+      ORDER BY u.id, wp.joined_at DESC
+      `,
+      [req.user.id],
+    );
+    const patients = patientsResult.rows;
+
+    const patientVisitsResult = await db.query(
+      `
+      SELECT wp.patient_id, u.name, u.email,
+             COUNT(DISTINCT sv.id) AS visit_count,
+             COUNT(DISTINCT sv.id) FILTER (WHERE sv.status = 'completed') AS completed_visit_count,
+             MAX(sv.scheduled_at) FILTER (WHERE sv.status = 'completed') AS last_visit_at
+      FROM workspace_patients wp
+      JOIN workspaces w ON w.id = wp.workspace_id
+      JOIN users u ON u.id = wp.patient_id
+      LEFT JOIN scheduled_visits sv ON sv.patient_id = wp.patient_id AND sv.workspace_id = wp.workspace_id
+      WHERE w.doctor_id = $1
+      GROUP BY wp.patient_id, u.name, u.email
+      ORDER BY visit_count DESC
+      `,
+      [req.user.id],
+    );
+
+    const visitsResult = await db.query(
+      `
+      SELECT sv.*, w.title AS workspace_title, w.drug_name, u.name AS patient_name
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      JOIN users u ON u.id = sv.patient_id
+      WHERE sv.doctor_id = $1
+      ORDER BY sv.scheduled_at ASC
+      `,
+      [req.user.id],
+    );
+    const visits = visitsResult.rows;
+
+    const workspacesResult = await db.query(
+      `SELECT id, drug_name, title, status FROM workspaces WHERE doctor_id = $1`,
+      [req.user.id],
+    );
+
+    const recentJoinsResult = await db.query(
+      `
+      SELECT wp.joined_at AS at, u.name AS patient_name, w.title AS workspace_title, 'enrollment' AS type
+      FROM workspace_patients wp
+      JOIN workspaces w ON w.id = wp.workspace_id
+      JOIN users u ON u.id = wp.patient_id
+      WHERE w.doctor_id = $1
+      ORDER BY wp.joined_at DESC
+      LIMIT 10
+      `,
+      [req.user.id],
+    );
+
+    const recentVisitsResult = await db.query(
+      `
+      SELECT sv.completed_at AS at, u.name AS patient_name, w.title AS workspace_title, 'visit_completed' AS type
+      FROM scheduled_visits sv
+      JOIN workspaces w ON w.id = sv.workspace_id
+      JOIN users u ON u.id = sv.patient_id
+      WHERE sv.doctor_id = $1 AND sv.status = 'completed'
+      ORDER BY sv.completed_at DESC
+      LIMIT 10
+      `,
+      [req.user.id],
+    );
+
+    const recentVitalsResult = await db.query(
+      `
+      SELECT v.patient_submitted_at AS at, u.name AS patient_name, w.title AS workspace_title, 'vitals_submitted' AS type
+      FROM vitals v
+      JOIN workspaces w ON w.id = v.workspace_id
+      JOIN users u ON u.id = v.patient_id
+      WHERE w.doctor_id = $1 AND v.patient_submitted_at IS NOT NULL
+      ORDER BY v.patient_submitted_at DESC
+      LIMIT 10
+      `,
+      [req.user.id],
+    );
+
+    const recentActivity = [...recentJoinsResult.rows, ...recentVisitsResult.rows, ...recentVitalsResult.rows]
+      .filter((a) => a.at)
+      .sort((a, b) => new Date(b.at) - new Date(a.at))
+      .slice(0, 15);
+
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const totalPatients = patients.length;
+    const activePatients = patients.filter((p) => p.enrollment_status === "active").length;
+    const newPatients = patients.filter((p) => new Date(p.joined_at) >= thirtyDaysAgo).length;
+
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const todaysAppointments = visits.filter((v) => {
+      const d = new Date(v.scheduled_at);
+      return d >= startOfToday && d <= endOfToday;
+    }).length;
+    const upcomingAppointments = visits.filter(
+      (v) => ["scheduled", "active"].includes(v.status) && new Date(v.scheduled_at) > now,
+    ).length;
+    const completedAppointments = visits.filter((v) => v.status === "completed").length;
+    const cancelledAppointments = visits.filter((v) => v.status === "cancelled").length;
+
+    const growthMap = {};
+    patients.forEach((p) => {
+      const key = new Date(p.joined_at).toISOString().slice(0, 7);
+      growthMap[key] = (growthMap[key] || 0) + 1;
+    });
+    const patientGrowth = Object.entries(growthMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, count]) => ({ month, count }));
+
+    const apptMap = {};
+    visits.forEach((v) => {
+      const key = new Date(v.scheduled_at).toISOString().slice(0, 7);
+      apptMap[key] = (apptMap[key] || 0) + 1;
+    });
+    const appointmentTrend = Object.entries(apptMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, count]) => ({ month, count }));
+
+    const genderCounts = {};
+    const ageBuckets = { "0-17": 0, "18-34": 0, "35-49": 0, "50-64": 0, "65+": 0 };
+    patients.forEach((p) => {
+      if (p.gender) genderCounts[p.gender] = (genderCounts[p.gender] || 0) + 1;
+      if (p.age !== null && p.age !== undefined) {
+        if (p.age < 18) ageBuckets["0-17"]++;
+        else if (p.age < 35) ageBuckets["18-34"]++;
+        else if (p.age < 50) ageBuckets["35-49"]++;
+        else if (p.age < 65) ageBuckets["50-64"]++;
+        else ageBuckets["65+"]++;
+      }
+    });
+
+    const drugCounts = {};
+    workspacesResult.rows.forEach((w) => {
+      drugCounts[w.drug_name] = (drugCounts[w.drug_name] || 0) + 1;
+    });
+
+    const conditionCounts = {};
+    patients.forEach((p) => {
+      if (!p.medical_conditions) return;
+      p.medical_conditions
+        .split(/[,;\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((cond) => {
+          const key = cond.toLowerCase();
+          conditionCounts[key] = (conditionCounts[key] || 0) + 1;
+        });
+    });
+
+    const activeWorkspaceCount = workspacesResult.rows.filter((w) => w.status === "active").length;
+    const avgVisitsPerWorkspace = workspacesResult.rows.length
+      ? +(visits.length / workspacesResult.rows.length).toFixed(1)
+      : 0;
+    const avgPatientsPerWorkspace = workspacesResult.rows.length
+      ? +(patients.length / workspacesResult.rows.length).toFixed(1)
+      : 0;
+
+    const frequentPatients = patientVisitsResult.rows.filter((p) => Number(p.visit_count) > 0).slice(0, 10);
+
+    res.json({
+      patients: {
+        total: totalPatients,
+        active: activePatients,
+        new: newPatients,
+        growth: patientGrowth,
+        demographics: { gender: genderCounts, ageBuckets },
+        frequentlyVisited: frequentPatients,
+      },
+      appointments: {
+        today: todaysAppointments,
+        upcoming: upcomingAppointments,
+        completed: completedAppointments,
+        cancelled: cancelledAppointments,
+        trend: appointmentTrend,
+      },
+      conditions: {
+        byDrug: Object.entries(drugCounts).map(([name, value]) => ({ name, value })),
+        byConditionText: Object.entries(conditionCounts)
+          .map(([name, value]) => ({ name, value }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 10),
+      },
+      workload: {
+        activeWorkspaces: activeWorkspaceCount,
+        totalWorkspaces: workspacesResult.rows.length,
+        avgVisitsPerWorkspace,
+        avgPatientsPerWorkspace,
+      },
+      recentActivity,
+    });
+  } catch (error) {
+    console.error("Doctor analytics dashboard error:", error);
+    res.status(500).json({ error: "Failed to load doctor analytics" });
+  }
+});
 
 app.get(
   "/api/workspaces/:workspaceId/patient-summary",

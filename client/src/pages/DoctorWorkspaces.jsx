@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, useAuth } from "../AuthContext.jsx";
 import DashboardNav from "../components/DashboardNav.jsx";
 
@@ -76,12 +76,17 @@ export default function DoctorWorkspaces() {
               attend scheduled visits inside it.
             </p>
           </div>
-          <button
-            className="btn btn-primary"
-            onClick={() => setShowCreate((s) => !s)}
-          >
-            {showCreate ? "Cancel" : "+ New workspace"}
-          </button>
+          <div className="flex gap-8">
+            <Link to="/doctor/analytics" className="btn btn-secondary">
+              View analytics
+            </Link>
+            <button
+              className="btn btn-primary"
+              onClick={() => setShowCreate((s) => !s)}
+            >
+              {showCreate ? "Cancel" : "+ New workspace"}
+            </button>
+          </div>
         </div>
 
         {justCreated && !showCreate && (

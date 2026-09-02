@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api, useAuth } from '../AuthContext.jsx';
 import DashboardNav from '../components/DashboardNav.jsx';
 
@@ -46,7 +46,10 @@ export default function PatientWorkspaces() {
     <div>
       <DashboardNav title="Your Workspaces" />
       <div className="container" style={{ padding: '32px 32px 64px' }}>
-        <h1 style={{ fontSize: 28, marginBottom: 6 }}>Your workspaces</h1>
+                <div className="flex justify-between items-start" style={{ marginBottom: 6 }}>
+          <h1 style={{ fontSize: 28 }}>Your workspaces</h1>
+          <Link to="/patient/analytics" className="btn btn-secondary btn-sm">View analytics</Link>
+        </div>
         <p className="text-muted" style={{ marginBottom: 24 }}>Join a trial workspace using the code your doctor shared with you.</p>
 
         <div className="card" style={{ padding: 24, marginBottom: 28, maxWidth: 480 }}>

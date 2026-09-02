@@ -14,6 +14,8 @@ import PatientWorkspaceView from "./pages/PatientWorkspaceView.jsx";
 
 import VisitRoom from "./pages/VisitRoom.jsx";
 import Settings from "./pages/Settings.jsx";
+import PatientAnalyticsDashboard from "./pages/PatientAnalyticsDashboard.jsx";
+import DoctorAnalyticsDashboard from "./pages/DoctorAnalyticsDashboard.jsx";
 
 function Protected({ role, children }) {
   const { user } = useAuth();
@@ -108,6 +110,14 @@ export default function App() {
           </Protected>
         }
       />
+      <Route
+        path="/doctor/analytics"
+        element={
+          <Protected role="doctor">
+            <DoctorAnalyticsDashboard />
+          </Protected>
+        }
+      />
 
       {/* Patient */}
       <Route
@@ -123,6 +133,14 @@ export default function App() {
         element={
           <Protected role="patient">
             <PatientWorkspaceView />
+          </Protected>
+        }
+      />
+      <Route
+        path="/patient/analytics"
+        element={
+          <Protected role="patient">
+            <PatientAnalyticsDashboard />
           </Protected>
         }
       />
