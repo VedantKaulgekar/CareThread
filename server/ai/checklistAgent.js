@@ -1,12 +1,3 @@
-/**
- * Live Visit Checklist Agent — Feature 2 from the CareThread solution
- * design. The LLM step only runs once, at workspace setup, to turn a
- * doctor's plain-text protocol description into a structured checklist.
- * Enforcement during the live visit itself is pure state-machine logic
- * (see the checklist-progress routes in index.js) — no LLM in the loop
- * during the actual call.
- */
-
 const { completeJSON } = require("./groqClient");
 
 const SYSTEM_PROMPT = `You convert a clinical trial visit protocol, written in plain language by a doctor, into a structured checklist.
@@ -37,18 +28,15 @@ async function generateChecklist(protocolText) {
     maxTokens: 500,
   });
 
-  // Defensive normalization in case the model omits a key.
   return {
     pre_dosage: Array.isArray(checklist.pre_dosage) ? checklist.pre_dosage : [],
-    post_dosage: Array.isArray(checklist.post_dosage) ? checklist.post_dosage : [],
+    post_dosage: Array.isArray(checklist.post_dosage)
+      ? checklist.post_dosage
+      : [],
     general: Array.isArray(checklist.general) ? checklist.general : [],
   };
 }
 
-/**
- * Given a checklist definition and a progress object, returns the list
- * of required items not yet confirmed (empty array = fully complete).
- */
 function getIncompleteItems(checklist, progress) {
   const incomplete = [];
   for (const stage of ["pre_dosage", "post_dosage", "general"]) {

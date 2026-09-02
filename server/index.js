@@ -25,31 +25,14 @@ const app = express();
 
 const server = http.createServer(app);
 
-/*
-|--------------------------------------------------------------------------
-| SOCKET.IO
-|--------------------------------------------------------------------------
-*/
-
 const io = new Server(server, {
   cors: {
     origin: "*",
   },
 });
 
-/*
-|--------------------------------------------------------------------------
-| CONFIGURATION
-|--------------------------------------------------------------------------
-*/
-
 const crypto = require("crypto");
 
-// If JWT_SECRET isn't pinned in .env, generate a fresh random one on every
-// boot. This is deliberate: it means restarting the server invalidates every
-// previously-issued token, logging everyone out — which is what you want
-// during dev/demo. If you ever want sessions to survive a restart, set a
-// fixed JWT_SECRET in server/.env instead.
 const JWT_SECRET =
   process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.JWT_SECRET) {
@@ -60,26 +43,11 @@ if (!process.env.JWT_SECRET) {
 
 const PORT = process.env.PORT || 4000;
 
-// Used to build absolute links (e.g. the "join your visit" link in emails).
-// Set APP_URL in server/.env once you have a real deployed URL; falls back
-// to localhost for local dev.
 const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
-
-/*
-|--------------------------------------------------------------------------
-| MIDDLEWARE
-|--------------------------------------------------------------------------
-*/
 
 app.use(cors());
 
 app.use(express.json());
-
-/*
-|--------------------------------------------------------------------------
-| AUTH MIDDLEWARE
-|--------------------------------------------------------------------------
-*/
 
 function auth(requiredRole) {
   return (req, res, next) => {
@@ -121,12 +89,6 @@ function auth(requiredRole) {
   };
 }
 
-/*
-|--------------------------------------------------------------------------
-| HELPERS
-|--------------------------------------------------------------------------
-*/
-
 function genRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -164,12 +126,6 @@ function publicUser(user) {
   return rest;
 }
 
-/*
-|--------------------------------------------------------------------------
-| HEALTH CHECK
-|--------------------------------------------------------------------------
-*/
-
 app.get("/api/health", async (req, res) => {
   try {
     const result = await db.query("SELECT NOW() AS now");
@@ -189,12 +145,6 @@ app.get("/api/health", async (req, res) => {
     });
   }
 });
-
-/*
-|--------------------------------------------------------------------------
-| SIGNUP
-|--------------------------------------------------------------------------
-*/
 
 app.post("/api/auth/signup", async (req, res) => {
   try {
@@ -318,12 +268,6 @@ app.post("/api/auth/signup", async (req, res) => {
   }
 });
 
-/*
-|--------------------------------------------------------------------------
-| LOGIN
-|--------------------------------------------------------------------------
-*/
-
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password, role } = req.body;
@@ -382,12 +326,6 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-/*
-|--------------------------------------------------------------------------
-| CURRENT USER
-|--------------------------------------------------------------------------
-*/
-
 app.get("/api/auth/me", auth(), async (req, res) => {
   try {
     const result = await db.query(
@@ -418,12 +356,6 @@ app.get("/api/auth/me", auth(), async (req, res) => {
     });
   }
 });
-
-/*
-|--------------------------------------------------------------------------
-| UPDATE PROFILE
-|--------------------------------------------------------------------------
-*/
 
 app.put("/api/auth/me", auth(), async (req, res) => {
   try {
@@ -465,12 +397,6 @@ app.put("/api/auth/me", auth(), async (req, res) => {
   }
 });
 
-/*
-|--------------------------------------------------------------------------
-| CHANGE PASSWORD
-|--------------------------------------------------------------------------
-*/
-
 app.put("/api/auth/password", auth(), async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -510,12 +436,6 @@ app.put("/api/auth/password", auth(), async (req, res) => {
   }
 });
 
-/*
-|--------------------------------------------------------------------------
-| WORKSPACE ROUTES
-|--------------------------------------------------------------------------
-*/
-
 function genCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -540,8 +460,6 @@ async function genUniqueCode(table, column = "code") {
   }
   return code;
 }
-
-// ---------- Create / list workspaces ----------
 
 app.post("/api/workspaces", auth("doctor"), async (req, res) => {
   try {
@@ -686,13 +604,6 @@ app.put("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
   }
 });
 
-// Fully deletes a workspace and everything tied to it — patient
-// enrollments, scheduled visits, vitals, visit requests, transcripts,
-// calendar events, notification log entries. Done inside a transaction so
-// it either all goes or none of it does; children are removed before
-// parents to satisfy foreign keys. This is genuinely destructive and
-// unrecoverable — the client should confirm with the doctor before
-// calling this.
 app.delete("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
   const client = await db.connect();
   try {
@@ -746,11 +657,6 @@ app.delete("/api/workspaces/:workspaceId", auth("doctor"), async (req, res) => {
   }
 });
 
-// Manual checklist editing — the doctor can hand-author or tweak the
-// pre/post-dosage/general checklist items directly, independent of the
-// AI-from-protocol-text generator above. Accepts the same shape the
-// generator produces: { pre_dosage: string[], post_dosage: string[],
-// general: string[] }.
 app.put(
   "/api/workspaces/:workspaceId/checklist",
   auth("doctor"),
@@ -787,8 +693,6 @@ app.put(
     }
   },
 );
-
-// ---------- Enrollment ----------
 
 app.post("/api/workspaces/join", auth("patient"), async (req, res) => {
   try {
@@ -882,8 +786,6 @@ app.get("/api/workspaces/patient/mine", auth("patient"), async (req, res) => {
   }
 });
 
-// ---------- Patient roster (doctor view, scoped to one workspace) ----------
-
 app.get(
   "/api/workspaces/:workspaceId/patients",
   auth("doctor"),
@@ -922,12 +824,6 @@ app.get(
   },
 );
 
-// Removes a patient from a workspace. Kept as a soft "withdrawn" status
-// rather than deleting the enrollment row outright, so visit history and
-// vitals for that patient stay intact and queryable — only their access
-// and any future visits go away. Any of their still-upcoming visits in
-// this workspace are cancelled at the same time so they don't end up
-// with a dangling scheduled call to a trial they're no longer part of.
 app.delete(
   "/api/workspaces/:workspaceId/patients/:patientId",
   auth("doctor"),
@@ -968,10 +864,6 @@ app.delete(
     }
   },
 );
-
-// ============================================================
-// SCHEDULED VISIT ROUTES
-// ============================================================
 
 app.post(
   "/api/workspaces/:workspaceId/visits",
@@ -1026,8 +918,6 @@ app.post(
       );
       const visit = result.rows[0];
 
-      // Best-effort: never blocks or fails the scheduling response even if
-      // email sending has trouble — errors are caught and logged only.
       try {
         const peopleResult = await db.query(
           "SELECT id, name, email FROM users WHERE id = ANY($1::text[])",
@@ -1155,8 +1045,6 @@ app.get("/api/visits/patient/mine", auth("patient"), async (req, res) => {
   }
 });
 
-// ---------- Visit room lookup (used by VisitRoom page) ----------
-
 app.get("/api/visits/by-code/:code", auth(), async (req, res) => {
   try {
     const code = req.params.code.toUpperCase();
@@ -1217,10 +1105,6 @@ app.post(
         return res.status(404).json({ error: "Visit not found" });
       }
 
-      // Checklist enforcement: if this workspace has a protocol checklist,
-      // every required item must be confirmed before the visit can be
-      // marked complete — unless the doctor explicitly overrides, which
-      // is logged as a protocol deviation rather than silently allowed.
       const hasChecklist =
         visit.checklist &&
         (visit.checklist.pre_dosage?.length ||
@@ -1260,10 +1144,6 @@ app.post(
         };
       }
 
-      // Generate the after-visit summary before marking complete, so the
-      // patient has it the moment the visit closes. Never blocks completion
-      // if the AI call fails (e.g. no GROQ_API_KEY set) — the visit still
-      // completes, just without a summary.
       let summary = null;
       try {
         const vitalsResult = await db.query(
@@ -1301,10 +1181,6 @@ app.post(
     }
   },
 );
-
-// ============================================================
-// CHECKLIST ROUTES (Feature 2: Live Visit Checklist Agent)
-// ============================================================
 
 app.put(
   "/api/workspaces/:workspaceId/protocol",
@@ -1386,10 +1262,6 @@ app.put("/api/visits/:visitId/checklist", auth("doctor"), async (req, res) => {
   }
 });
 
-// ============================================================
-// VISIT REQUEST ROUTES (Feature 1: Intake / urgency triage)
-// ============================================================
-
 app.post(
   "/api/workspaces/:workspaceId/visit-requests",
   auth("patient"),
@@ -1440,8 +1312,6 @@ app.post(
         ],
       );
 
-      // Best-effort email to the doctor for high-urgency requests. Falls
-      // back to a console/audit-log entry if email isn't configured.
       if (classification.urgency === "high") {
         const doctorResult = await db.query(
           "SELECT email, name FROM users WHERE id = $1",
@@ -1614,10 +1484,6 @@ app.post(
   },
 );
 
-// ============================================================
-// VITALS ROUTES (split: patient submits readings, doctor submits dosage/notes)
-// ============================================================
-
 async function getVisitOr404(scheduledVisitId, res) {
   const result = await db.query(
     "SELECT * FROM scheduled_visits WHERE id = $1",
@@ -1630,10 +1496,6 @@ async function getVisitOr404(scheduledVisitId, res) {
   }
   return visit;
 }
-
-// ============================================================
-// VISIT REPORT (downloadable PDF, doctor or patient of the visit)
-// ============================================================
 
 app.get("/api/visits/:visitId/report", auth(), async (req, res) => {
   try {
@@ -1656,11 +1518,9 @@ app.get("/api/visits/:visitId/report", auth(), async (req, res) => {
       return res.status(403).json({ error: "Not your visit" });
     }
     if (visit.status !== "completed") {
-      return res
-        .status(400)
-        .json({
-          error: "The report is available once this visit is completed",
-        });
+      return res.status(400).json({
+        error: "The report is available once this visit is completed",
+      });
     }
 
     const vitalsResult = await db.query(
@@ -1694,13 +1554,6 @@ app.get("/api/visits/:visitId/report", auth(), async (req, res) => {
   }
 });
 
-// ============================================================
-// CHAT AGENT — a chat interface that can perform real tasks (schedule
-// visits, submit concerns, look things up) via tool-calling. Stateless
-// server-side: the client sends the full conversation each turn, nothing
-// is persisted, so there's no history across sessions by design.
-// ============================================================
-
 app.post("/api/agent/chat", auth(), async (req, res) => {
   try {
     const { messages } = req.body;
@@ -1724,13 +1577,11 @@ app.post("/api/agent/chat", auth(), async (req, res) => {
     res.json({ reply, actions });
   } catch (error) {
     console.error("Chat agent error:", error);
-    res
-      .status(500)
-      .json({
-        error: error.message?.includes("GROQ_API_KEY")
-          ? error.message
-          : "The assistant hit a problem — try again.",
-      });
+    res.status(500).json({
+      error: error.message?.includes("GROQ_API_KEY")
+        ? error.message
+        : "The assistant hit a problem — try again.",
+    });
   }
 });
 
@@ -1777,9 +1628,6 @@ app.put("/api/vitals/patient", auth("patient"), async (req, res) => {
 
     const id = uuidv4();
 
-    // Anomaly Detection Agent: check this reading against the patient's
-    // own history in this workspace before it's finalized. Never blocks
-    // the save — a flag is informational for the doctor, not a gate.
     let anomalyFlags = [];
     try {
       anomalyFlags = await anomalyAgent.checkVitalsSubmission({
@@ -1920,10 +1768,6 @@ app.get("/api/vitals/visit/:scheduledVisitId", auth(), async (req, res) => {
     res.status(500).json({ error: "Failed to fetch vitals" });
   }
 });
-
-// ============================================================
-// DASHBOARD / ANALYTICS
-// ============================================================
 
 app.get(
   "/api/workspaces/:workspaceId/dashboard",
@@ -2081,16 +1925,14 @@ app.get("/api/dashboard/patient", auth("patient"), async (req, res) => {
     res.status(500).json({ error: "Failed to load patient dashboard" });
   }
 });
-/*
-|--------------------------------------------------------------------------
-| PATIENT ANALYTICS DASHBOARD
-|--------------------------------------------------------------------------
-*/
 
-app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) => {
-  try {
-    const visitsResult = await db.query(
-      `
+app.get(
+  "/api/dashboard/patient/analytics",
+  auth("patient"),
+  async (req, res) => {
+    try {
+      const visitsResult = await db.query(
+        `
       SELECT sv.*, w.title AS workspace_title, w.drug_name, w.status AS workspace_status, d.name AS doctor_name
       FROM scheduled_visits sv
       JOIN workspaces w ON w.id = sv.workspace_id
@@ -2098,12 +1940,12 @@ app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) =>
       WHERE sv.patient_id = $1
       ORDER BY sv.scheduled_at ASC
       `,
-      [req.user.id],
-    );
-    const visits = visitsResult.rows;
+        [req.user.id],
+      );
+      const visits = visitsResult.rows;
 
-    const vitalsResult = await db.query(
-      `
+      const vitalsResult = await db.query(
+        `
       SELECT v.*, sv.scheduled_at, w.title AS workspace_title, w.drug_name
       FROM vitals v
       JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
@@ -2111,12 +1953,12 @@ app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) =>
       WHERE v.patient_id = $1
       ORDER BY sv.scheduled_at ASC
       `,
-      [req.user.id],
-    );
-    const vitals = vitalsResult.rows;
+        [req.user.id],
+      );
+      const vitals = vitalsResult.rows;
 
-    const medsResult = await db.query(
-      `
+      const medsResult = await db.query(
+        `
       SELECT DISTINCT ON (w.id)
         w.id AS workspace_id, w.title AS workspace_title, w.drug_name, w.status AS workspace_status,
         v.dosage_given, v.doctor_notes, v.doctor_submitted_at
@@ -2126,11 +1968,11 @@ app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) =>
       WHERE wp.patient_id = $1 AND wp.status = 'active'
       ORDER BY w.id, v.doctor_submitted_at DESC NULLS LAST
       `,
-      [req.user.id],
-    );
+        [req.user.id],
+      );
 
-    const historyResult = await db.query(
-      `
+      const historyResult = await db.query(
+        `
       SELECT sv.id, sv.title, sv.scheduled_at, sv.completed_at, sv.ai_summary,
              w.title AS workspace_title, w.drug_name, d.name AS doctor_name,
              (
@@ -2149,66 +1991,69 @@ app.get("/api/dashboard/patient/analytics", auth("patient"), async (req, res) =>
       WHERE sv.patient_id = $1 AND sv.status = 'completed'
       ORDER BY sv.completed_at DESC
       `,
-      [req.user.id],
-    );
+        [req.user.id],
+      );
 
-    const now = new Date();
-    const totalAppointments = visits.length;
-    const upcomingAppointments = visits.filter(
-      (v) => ["scheduled", "active"].includes(v.status) && new Date(v.scheduled_at) > now,
-    ).length;
-    const completedAppointments = visits.filter((v) => v.status === "completed").length;
-    const cancelledAppointments = visits.filter((v) => v.status === "cancelled").length;
-    const missedAppointments = visits.filter((v) => v.status === "missed").length;
+      const now = new Date();
+      const totalAppointments = visits.length;
+      const upcomingAppointments = visits.filter(
+        (v) =>
+          ["scheduled", "active"].includes(v.status) &&
+          new Date(v.scheduled_at) > now,
+      ).length;
+      const completedAppointments = visits.filter(
+        (v) => v.status === "completed",
+      ).length;
+      const cancelledAppointments = visits.filter(
+        (v) => v.status === "cancelled",
+      ).length;
+      const missedAppointments = visits.filter(
+        (v) => v.status === "missed",
+      ).length;
 
-    const apptMap = {};
-    visits.forEach((v) => {
-      const key = new Date(v.scheduled_at).toISOString().slice(0, 7);
-      apptMap[key] = (apptMap[key] || 0) + 1;
-    });
-    const appointmentTrend = Object.entries(apptMap)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, count]) => ({ month, count }));
+      const apptMap = {};
+      visits.forEach((v) => {
+        const key = new Date(v.scheduled_at).toISOString().slice(0, 7);
+        apptMap[key] = (apptMap[key] || 0) + 1;
+      });
+      const appointmentTrend = Object.entries(apptMap)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, count]) => ({ month, count }));
 
-    const vitalsTrend = vitals.map((v) => ({
-      date: v.scheduled_at,
-      stage: v.stage,
-      workspace: v.workspace_title,
-      temperature: v.temperature,
-      systolic: v.bp_systolic,
-      diastolic: v.bp_diastolic,
-      sugar: v.sugar,
-      spo2: v.spo2,
-      heart_rate: v.heart_rate,
-    }));
+      const vitalsTrend = vitals.map((v) => ({
+        date: v.scheduled_at,
+        stage: v.stage,
+        workspace: v.workspace_title,
+        temperature: v.temperature,
+        systolic: v.bp_systolic,
+        diastolic: v.bp_diastolic,
+        sugar: v.sugar,
+        spo2: v.spo2,
+        heart_rate: v.heart_rate,
+      }));
 
-    res.json({
-      appointments: {
-        total: totalAppointments,
-        upcoming: upcomingAppointments,
-        completed: completedAppointments,
-        cancelled: cancelledAppointments,
-        missed: missedAppointments,
-        list: visits,
-        trend: appointmentTrend,
-      },
-      vitals: {
-        trend: vitalsTrend,
-      },
-      medications: medsResult.rows,
-      medicalHistory: historyResult.rows,
-    });
-  } catch (error) {
-    console.error("Patient analytics dashboard error:", error);
-    res.status(500).json({ error: "Failed to load patient analytics" });
-  }
-});
-
-/*
-|--------------------------------------------------------------------------
-| DOCTOR ANALYTICS DASHBOARD
-|--------------------------------------------------------------------------
-*/
+      res.json({
+        appointments: {
+          total: totalAppointments,
+          upcoming: upcomingAppointments,
+          completed: completedAppointments,
+          cancelled: cancelledAppointments,
+          missed: missedAppointments,
+          list: visits,
+          trend: appointmentTrend,
+        },
+        vitals: {
+          trend: vitalsTrend,
+        },
+        medications: medsResult.rows,
+        medicalHistory: historyResult.rows,
+      });
+    } catch (error) {
+      console.error("Patient analytics dashboard error:", error);
+      res.status(500).json({ error: "Failed to load patient analytics" });
+    }
+  },
+);
 
 app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
   try {
@@ -2314,15 +2159,15 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       [req.user.id],
     );
 
-    const recentActivity = [...recentJoinsResult.rows, ...recentVisitsResult.rows, ...recentVitalsResult.rows]
+    const recentActivity = [
+      ...recentJoinsResult.rows,
+      ...recentVisitsResult.rows,
+      ...recentVitalsResult.rows,
+    ]
       .filter((a) => a.at)
       .sort((a, b) => new Date(b.at) - new Date(a.at))
       .slice(0, 15);
 
-    // Patient-reported concerns (via the "Report a concern" flow, AI-triaged
-    // for urgency) and doctor visit notes, merged into one feed so a doctor
-    // can scan for side effects / observations across all their patients
-    // without digging into each workspace individually.
     const concernsResult = await db.query(
       `
       SELECT vr.patient_id, u.name AS patient_name, vr.concern_text, vr.urgency,
@@ -2382,8 +2227,12 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const totalPatients = patients.length;
-    const activePatients = patients.filter((p) => p.enrollment_status === "active").length;
-    const newPatients = patients.filter((p) => new Date(p.joined_at) >= thirtyDaysAgo).length;
+    const activePatients = patients.filter(
+      (p) => p.enrollment_status === "active",
+    ).length;
+    const newPatients = patients.filter(
+      (p) => new Date(p.joined_at) >= thirtyDaysAgo,
+    ).length;
 
     const startOfToday = new Date(now);
     startOfToday.setHours(0, 0, 0, 0);
@@ -2395,10 +2244,16 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       return d >= startOfToday && d <= endOfToday;
     }).length;
     const upcomingAppointments = visits.filter(
-      (v) => ["scheduled", "active"].includes(v.status) && new Date(v.scheduled_at) > now,
+      (v) =>
+        ["scheduled", "active"].includes(v.status) &&
+        new Date(v.scheduled_at) > now,
     ).length;
-    const completedAppointments = visits.filter((v) => v.status === "completed").length;
-    const cancelledAppointments = visits.filter((v) => v.status === "cancelled").length;
+    const completedAppointments = visits.filter(
+      (v) => v.status === "completed",
+    ).length;
+    const cancelledAppointments = visits.filter(
+      (v) => v.status === "cancelled",
+    ).length;
 
     const DOSAGE_METRICS = [
       { key: "bp_systolic", label: "BP Systolic" },
@@ -2407,18 +2262,31 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       { key: "spo2", label: "SpO2" },
       { key: "sugar", label: "Glucose" },
     ];
-    const avgOf = (arr) => (arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null);
+    const avgOf = (arr) =>
+      arr.length
+        ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1)
+        : null;
     const preVitals = dosageVitals.filter((v) => v.stage === "pre_dosage");
     const postVitals = dosageVitals.filter((v) => v.stage === "post_dosage");
 
     const dosageImpact = DOSAGE_METRICS.map((m) => ({
       metric: m.label,
       metricKey: m.key,
-      pre: avgOf(preVitals.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
-      post: avgOf(postVitals.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+      pre: avgOf(
+        preVitals
+          .map((r) => r[m.key])
+          .filter((v) => v !== null && v !== undefined),
+      ),
+      post: avgOf(
+        postVitals
+          .map((r) => r[m.key])
+          .filter((v) => v !== null && v !== undefined),
+      ),
     }));
 
-    const drugNamesForDosage = [...new Set(dosageVitals.map((v) => v.drug_name))];
+    const drugNamesForDosage = [
+      ...new Set(dosageVitals.map((v) => v.drug_name)),
+    ];
     const dosageImpactByDrug = [];
     drugNamesForDosage.forEach((drug) => {
       const pre = preVitals.filter((r) => r.drug_name === drug);
@@ -2428,8 +2296,16 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
           drug,
           metric: m.label,
           metricKey: m.key,
-          pre: avgOf(pre.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
-          post: avgOf(post.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined)),
+          pre: avgOf(
+            pre
+              .map((r) => r[m.key])
+              .filter((v) => v !== null && v !== undefined),
+          ),
+          post: avgOf(
+            post
+              .map((r) => r[m.key])
+              .filter((v) => v !== null && v !== undefined),
+          ),
         });
       });
     });
@@ -2440,9 +2316,18 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       const pre = rows.filter((r) => r.stage === "pre_dosage");
       const post = rows.filter((r) => r.stage === "post_dosage");
       DOSAGE_METRICS.forEach((m) => {
-        const preAvg = avgOf(pre.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined));
-        const postAvg = avgOf(post.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined));
-        const change = preAvg !== null && postAvg !== null ? +(postAvg - preAvg).toFixed(1) : null;
+        const preAvg = avgOf(
+          pre.map((r) => r[m.key]).filter((v) => v !== null && v !== undefined),
+        );
+        const postAvg = avgOf(
+          post
+            .map((r) => r[m.key])
+            .filter((v) => v !== null && v !== undefined),
+        );
+        const change =
+          preAvg !== null && postAvg !== null
+            ? +(postAvg - preAvg).toFixed(1)
+            : null;
         patientResponseOverview.push({
           patientId: p.id,
           patientName: p.name,
@@ -2455,7 +2340,6 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       });
     });
 
-    // Example clinical thresholds used to flag an out-of-range post-dosage reading.
     const ABNORMAL_CHECKS = {
       spo2: (v) => v < 95,
       heart_rate: (v) => v > 100,
@@ -2465,14 +2349,22 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
     };
     const abnormalReadingsOverview = patients
       .map((p) => {
-        const rows = dosageVitals.filter((v) => v.patient_id === p.id && v.stage === "post_dosage");
+        const rows = dosageVitals.filter(
+          (v) => v.patient_id === p.id && v.stage === "post_dosage",
+        );
         let abnormalCount = 0;
         rows.forEach((r) => {
           Object.entries(ABNORMAL_CHECKS).forEach(([key, check]) => {
-            if (r[key] !== null && r[key] !== undefined && check(r[key])) abnormalCount++;
+            if (r[key] !== null && r[key] !== undefined && check(r[key]))
+              abnormalCount++;
           });
         });
-        return { patientId: p.id, patientName: p.name, abnormalCount, totalPostReadings: rows.length };
+        return {
+          patientId: p.id,
+          patientName: p.name,
+          abnormalCount,
+          totalPostReadings: rows.length,
+        };
       })
       .sort((a, b) => b.abnormalCount - a.abnormalCount);
 
@@ -2494,7 +2386,9 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
         });
     });
 
-    const activeWorkspaceCount = workspacesResult.rows.filter((w) => w.status === "active").length;
+    const activeWorkspaceCount = workspacesResult.rows.filter(
+      (w) => w.status === "active",
+    ).length;
     const avgVisitsPerWorkspace = workspacesResult.rows.length
       ? +(visits.length / workspacesResult.rows.length).toFixed(1)
       : 0;
@@ -2502,7 +2396,9 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       ? +(patients.length / workspacesResult.rows.length).toFixed(1)
       : 0;
 
-    const frequentPatients = patientVisitsResult.rows.filter((p) => Number(p.visit_count) > 0).slice(0, 10);
+    const frequentPatients = patientVisitsResult.rows
+      .filter((p) => Number(p.visit_count) > 0)
+      .slice(0, 10);
 
     res.json({
       patients: {
@@ -2532,7 +2428,10 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
       patientObservations,
       abnormalReadingsOverview,
       conditions: {
-        byDrug: Object.entries(drugCounts).map(([name, value]) => ({ name, value })),
+        byDrug: Object.entries(drugCounts).map(([name, value]) => ({
+          name,
+          value,
+        })),
         byConditionText: Object.entries(conditionCounts)
           .map(([name, value]) => ({ name, value }))
           .sort((a, b) => b.value - a.value)
@@ -2552,32 +2451,37 @@ app.get("/api/dashboard/doctor/analytics", auth("doctor"), async (req, res) => {
   }
 });
 
-app.get("/api/dashboard/doctor/patients/:patientId/vitals", auth("doctor"), async (req, res) => {
-  try {
-    const enrolled = await db.query(
-      `
+app.get(
+  "/api/dashboard/doctor/patients/:patientId/vitals",
+  auth("doctor"),
+  async (req, res) => {
+    try {
+      const enrolled = await db.query(
+        `
       SELECT 1
       FROM workspace_patients wp
       JOIN workspaces w ON w.id = wp.workspace_id
       WHERE w.doctor_id = $1 AND wp.patient_id = $2
       LIMIT 1
       `,
-      [req.user.id, req.params.patientId],
-    );
-    if (enrolled.rows.length === 0) {
-      return res.status(403).json({ error: "This patient is not enrolled in any of your workspaces" });
-    }
+        [req.user.id, req.params.patientId],
+      );
+      if (enrolled.rows.length === 0) {
+        return res.status(403).json({
+          error: "This patient is not enrolled in any of your workspaces",
+        });
+      }
 
-    const patientResult = await db.query(
-      `SELECT id, name, email, age, gender, medical_conditions FROM users WHERE id = $1 AND role = 'patient'`,
-      [req.params.patientId],
-    );
-    if (patientResult.rows.length === 0) {
-      return res.status(404).json({ error: "Patient not found" });
-    }
+      const patientResult = await db.query(
+        `SELECT id, name, email, age, gender, medical_conditions FROM users WHERE id = $1 AND role = 'patient'`,
+        [req.params.patientId],
+      );
+      if (patientResult.rows.length === 0) {
+        return res.status(404).json({ error: "Patient not found" });
+      }
 
-    const vitalsResult = await db.query(
-      `
+      const vitalsResult = await db.query(
+        `
       SELECT v.*, sv.scheduled_at, sv.title AS visit_title, w.title AS workspace_title, w.drug_name
       FROM vitals v
       JOIN scheduled_visits sv ON sv.id = v.scheduled_visit_id
@@ -2585,15 +2489,16 @@ app.get("/api/dashboard/doctor/patients/:patientId/vitals", auth("doctor"), asyn
       WHERE v.patient_id = $1 AND w.doctor_id = $2
       ORDER BY sv.scheduled_at DESC, v.stage ASC
       `,
-      [req.params.patientId, req.user.id],
-    );
+        [req.params.patientId, req.user.id],
+      );
 
-    res.json({ patient: patientResult.rows[0], vitals: vitalsResult.rows });
-  } catch (error) {
-    console.error("Patient vitals drill-down error:", error);
-    res.status(500).json({ error: "Failed to load patient observations" });
-  }
-});
+      res.json({ patient: patientResult.rows[0], vitals: vitalsResult.rows });
+    } catch (error) {
+      console.error("Patient vitals drill-down error:", error);
+      res.status(500).json({ error: "Failed to load patient observations" });
+    }
+  },
+);
 
 app.get(
   "/api/workspaces/:workspaceId/patient-summary",
@@ -2641,18 +2546,8 @@ app.get(
   },
 );
 
-/*
-|--------------------------------------------------------------------------
-| SOCKET.IO / WEBRTC
-|--------------------------------------------------------------------------
-*/
-
 io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);
-
-  /*
-   * JOIN ROOM
-   */
 
   socket.on("room:join", ({ roomCode, userId, userName, role }) => {
     if (!roomCode) {
@@ -2684,10 +2579,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  /*
-   * WEBRTC OFFER
-   */
-
   socket.on("webrtc:offer", ({ roomCode, offer, to }) => {
     if (!to || !offer) {
       return;
@@ -2702,10 +2593,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  /*
-   * WEBRTC ANSWER
-   */
-
   socket.on("webrtc:answer", ({ answer, to }) => {
     if (!to || !answer) {
       return;
@@ -2718,10 +2605,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  /*
-   * ICE CANDIDATE
-   */
-
   socket.on("webrtc:ice-candidate", ({ candidate, to }) => {
     if (!to || !candidate) {
       return;
@@ -2733,10 +2616,6 @@ io.on("connection", (socket) => {
       from: socket.id,
     });
   });
-
-  /*
-   * LEAVE ROOM
-   */
 
   socket.on("room:leave", ({ roomCode }) => {
     if (!roomCode) {
@@ -2752,10 +2631,6 @@ io.on("connection", (socket) => {
     });
   });
 
-  /*
-   * DISCONNECT
-   */
-
   socket.on("disconnect", () => {
     console.log(`Socket disconnected: ${socket.id}`);
 
@@ -2767,40 +2642,15 @@ io.on("connection", (socket) => {
   });
 });
 
-/*
-|--------------------------------------------------------------------------
-| API 404 HANDLER
-|--------------------------------------------------------------------------
-|
-| This is useful because if frontend calls
-| an API endpoint that doesn't exist, you'll
-| see the actual API error instead of the
-| production React fallback.
-|
-|--------------------------------------------------------------------------
-*/
-
 app.use("/api", (req, res) => {
   res.status(404).json({
     error: `API route not found: ${req.method} ${req.originalUrl}`,
   });
 });
 
-/*
-|--------------------------------------------------------------------------
-| SERVE CLIENT IN PRODUCTION
-|--------------------------------------------------------------------------
-*/
-
 const clientDist = path.join(__dirname, "..", "client", "dist");
 
 app.use(express.static(clientDist));
-
-/*
-|--------------------------------------------------------------------------
-| REACT ROUTER FALLBACK
-|--------------------------------------------------------------------------
-*/
 
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api")) {
@@ -2823,12 +2673,6 @@ app.get("*", (req, res, next) => {
     }
   });
 });
-
-/*
-|--------------------------------------------------------------------------
-| START SERVER
-|--------------------------------------------------------------------------
-*/
 
 server.listen(PORT, () => {
   console.log(`CareThread server running on port ${PORT}`);

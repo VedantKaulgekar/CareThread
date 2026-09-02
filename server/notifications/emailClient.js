@@ -1,16 +1,3 @@
-/**
- * Email wrapper — genuinely free, no third-party account signup, no
- * card, no trial credit to run out. Uses Gmail's SMTP relay via an
- * "app password" (not your real Gmail password) through nodemailer.
- *
- * Until EMAIL_USER / EMAIL_APP_PASSWORD are set in server/.env, every
- * "send" is logged to notification_log with status
- * 'skipped_no_credentials' and printed to the console — nothing
- * crashes, nothing silently pretends to have sent an email that didn't
- * go out. Once credentials are added, the exact same call path starts
- * actually sending email with zero code changes elsewhere in the app.
- */
-
 const { v4: uuidv4 } = require("uuid");
 const nodemailer = require("nodemailer");
 const db = require("../db");
@@ -38,12 +25,6 @@ function isConfigured() {
   return Boolean(process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD);
 }
 
-/**
- * Sends (or, if not configured, logs) an email and always writes an
- * audit entry to notification_log — same pattern used everywhere else
- * in CareThread for AI/integration actions, so every automated
- * notification is traceable.
- */
 async function sendEmail({
   toEmail,
   subject,

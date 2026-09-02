@@ -1,15 +1,3 @@
-/**
- * Handoff Agent — the one AI feature from the original CareThread solution
- * design that's fully wired in so far. When a visit is marked complete,
- * this turns the recorded vitals (patient readings + doctor dosage/notes)
- * into a short, plain-language summary for the patient, using a free
- * open-weight model via Groq.
- *
- * Deliberately non-diagnostic: it only restates what was already recorded
- * by the patient and doctor during the visit — it never adds a medical
- * opinion, diagnosis, or recommendation of its own.
- */
-
 const { complete } = require("./groqClient");
 
 const SYSTEM_PROMPT = `You write short, plain-language after-visit summaries for patients in a clinical drug trial.
@@ -26,7 +14,9 @@ function buildPrompt({ workspaceTitle, drugName, vitalsRows }) {
     .map((v) => {
       const readings = [
         v.temperature != null && `temperature ${v.temperature}°F`,
-        v.bp_systolic != null && v.bp_diastolic != null && `blood pressure ${v.bp_systolic}/${v.bp_diastolic}`,
+        v.bp_systolic != null &&
+          v.bp_diastolic != null &&
+          `blood pressure ${v.bp_systolic}/${v.bp_diastolic}`,
         v.sugar != null && `blood sugar ${v.sugar} mg/dL`,
         v.spo2 != null && `SpO2 ${v.spo2}%`,
         v.heart_rate != null && `heart rate ${v.heart_rate} bpm`,

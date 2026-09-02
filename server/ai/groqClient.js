@@ -20,9 +20,6 @@ function getClient() {
 
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
 
-/**
- * Normal text completion.
- */
 async function complete({
   system,
   prompt,
@@ -58,14 +55,6 @@ async function complete({
   return response.choices[0]?.message?.content?.trim() || "";
 }
 
-/**
- * JSON completion.
- *
- * If a JSON schema is provided, use Groq Structured Outputs
- * with strict schema validation.
- *
- * If no schema is provided, fall back to JSON Object Mode.
- */
 async function completeJSON({
   system,
   prompt,
@@ -111,14 +100,10 @@ async function completeJSON({
 
     temperature,
 
-    // GPT-OSS is a reasoning model, so give it enough
-    // completion space for reasoning + final JSON.
     max_completion_tokens: maxTokens,
 
-    // Keep reasoning small for simple classification tasks.
     reasoning_effort: reasoningEffort,
 
-    // Do not return the model's internal reasoning to the application.
     reasoning_format: "hidden",
 
     response_format: responseFormat,

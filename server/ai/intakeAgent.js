@@ -1,19 +1,3 @@
-/**
- * Intake Agent — CareThread
- *
- * Classifies a patient's free-text concern as:
- *
- *   low
- *   medium
- *   high
- *   unclear
- *
- * The agent does NOT diagnose, prescribe, or provide medical advice.
- *
- * It uses Groq Structured Outputs so the response always follows
- * the expected JSON schema.
- */
-
 const { completeJSON } = require("./groqClient");
 
 const SYSTEM_PROMPT = `You are the CareThread patient-intake urgency classifier.
@@ -76,11 +60,8 @@ async function classifyConcern(concernText) {
 
     temperature: 0.1,
 
-    // Enough space for GPT-OSS reasoning + final structured JSON.
     maxTokens: 500,
 
-    // Keep reasoning effort low because this is a simple
-    // four-category classification task.
     reasoningEffort: "low",
 
     schema: {
@@ -125,24 +106,10 @@ async function classifyConcern(concernText) {
     ? result.urgency
     : "unclear";
 
-  /*
-   * Confidence rule:
-   *
-   * Normally, confidence below 0.6 becomes "unclear".
-   *
-   * However, an explicit urgent/emergency request is preserved
-   * as high urgency because the patient has clearly indicated
-   * that they need immediate attention.
-   */
   if (confidence < CONFIDENCE_THRESHOLD) {
     urgency = explicitUrgentLanguage ? "high" : "unclear";
   }
 
-  /*
-   * If the model itself identified an explicit urgent signal
-   * as high, keep it high even if confidence is close to the
-   * threshold.
-   */
   if (explicitUrgentLanguage && urgency === "unclear") {
     urgency = "high";
   }

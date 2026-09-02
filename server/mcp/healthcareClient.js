@@ -1,18 +1,7 @@
-/**
- * Wraps the public `healthcare-mcp` server (FDA drug data, clinical trials,
- * ICD-10, PubMed) as a persistent MCP client connection.
- *
- * No API key or account is required — this hits public, unauthenticated
- * government/medical data APIs (openFDA, ClinicalTrials.gov, NCBI) through
- * a real Model Context Protocol server, spawned as a child process over
- * stdio, exactly as MCP is meant to be used.
- *
- * The connection is created lazily on first use and kept alive for reuse,
- * since spawning a fresh subprocess per request would be slow.
- */
-
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
-const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
+const {
+  StdioClientTransport,
+} = require("@modelcontextprotocol/sdk/client/stdio.js");
 const path = require("path");
 
 let clientPromise = null;
@@ -31,7 +20,9 @@ function createClient() {
   );
 
   transport.onclose = () => {
-    console.warn("Healthcare MCP connection closed; will reconnect on next call.");
+    console.warn(
+      "Healthcare MCP connection closed; will reconnect on next call.",
+    );
     clientPromise = null;
   };
 
@@ -48,11 +39,6 @@ async function getClient() {
   return clientPromise;
 }
 
-/**
- * Calls a named tool on the healthcare MCP server and returns the parsed
- * JSON payload the tool returned (the server always returns a single
- * text content block containing a JSON string).
- */
 async function callHealthcareTool(toolName, args) {
   const client = await getClient();
   const result = await client.callTool({ name: toolName, arguments: args });

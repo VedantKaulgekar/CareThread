@@ -1,11 +1,3 @@
-/**
- * Ambient Scribe Agent
- *
- * Browser records complete short audio files (~15s).
- * Each complete audio file is uploaded to Groq Whisper,
- * transcribed, and stored against the visit.
- */
-
 const { v4: uuidv4 } = require("uuid");
 const { toFile } = require("groq-sdk");
 
@@ -30,13 +22,6 @@ async function transcribeChunk({
 
   const groq = getClient();
 
-  /*
-   * Important:
-   *
-   * The frontend now creates a COMPLETE WebM file for
-   * every 15-second chunk by stopping and restarting
-   * MediaRecorder.
-   */
   const safeFilename = filename || "chunk.webm";
 
   const file = await toFile(audioBuffer, safeFilename);

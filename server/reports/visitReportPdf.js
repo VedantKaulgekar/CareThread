@@ -1,12 +1,3 @@
-/**
- * Generates a downloadable PDF report for a completed visit — full vitals
- * per stage, dosage/notes, and the AI after-visit summary, styled to look
- * like an actual clinical document rather than a debug dump.
- *
- * Usage: streamVisitReport(res, data) pipes directly into an Express
- * response with the right headers already set by the caller.
- */
-
 const PDFDocument = require("pdfkit");
 
 const INK = "#1a1a2e";
@@ -237,12 +228,10 @@ function streamVisitReport(res, data) {
   doc.font("Helvetica").fontSize(8);
   const footerHeight = doc.heightOfString(footerText, { width: footerWidth });
   const footerY = doc.page.height - doc.page.margins.bottom - footerHeight - 10;
-  doc
-    .fillColor(INK_SOFT)
-    .text(footerText, doc.page.margins.left, footerY, {
-      width: footerWidth,
-      align: "center",
-    });
+  doc.fillColor(INK_SOFT).text(footerText, doc.page.margins.left, footerY, {
+    width: footerWidth,
+    align: "center",
+  });
 
   doc.end();
 }

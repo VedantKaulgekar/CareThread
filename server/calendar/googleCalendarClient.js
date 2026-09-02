@@ -1,14 +1,3 @@
-/**
- * Google Calendar integration.
- *
- * Ready to activate the moment GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
- * and GOOGLE_REDIRECT_URI are set in server/.env (from a Google Cloud
- * OAuth consent screen the account owner sets up — see server/.env.example
- * for the exact steps). Until then, every function here throws a clear
- * "not configured" error that routes catch and turn into a normal,
- * non-crashing API response.
- */
-
 const { google } = require("googleapis");
 const { v4: uuidv4 } = require("uuid");
 const db = require("../db");
@@ -42,11 +31,6 @@ function newOAuthClient() {
   );
 }
 
-/**
- * Builds the URL to send a user to for the Google consent screen.
- * `state` should be a signed/opaque value identifying which CareThread
- * user is connecting (we use their user id).
- */
 function getAuthUrl(state) {
   const client = newOAuthClient();
   return client.generateAuthUrl({
@@ -57,10 +41,6 @@ function getAuthUrl(state) {
   });
 }
 
-/**
- * Exchanges an OAuth code (from the callback redirect) for tokens and
- * stores the refresh token for this user.
- */
 async function handleOAuthCallback(userId, code) {
   const client = newOAuthClient();
   const { tokens } = await client.getToken(code);
@@ -110,16 +90,19 @@ async function isConnected(userId) {
 }
 
 async function disconnect(userId) {
-  await db.query(`DELETE FROM calendar_connections WHERE user_id = $1`, [userId]);
+  await db.query(`DELETE FROM calendar_connections WHERE user_id = $1`, [
+    userId,
+  ]);
 }
 
-/**
- * Creates (or updates, if one already exists for this visit+user) a
- * calendar event for a scheduled visit. Silently no-ops if the user
- * hasn't connected their calendar — this is meant to be called
- * fire-and-forget from the scheduling route, never to block it.
- */
-async function syncVisitEvent({ userId, scheduledVisitId, title, description, startTime, durationMinutes = 30 }) {
+async function syncVisitEvent({
+  userId,
+  scheduledVisitId,
+  title,
+  description,
+  startTime,
+  durationMinutes = 30,
+}) {
   if (!isConfigured()) return { synced: false, reason: "not_configured" };
 
   const client = await getClientForUser(userId);

@@ -1,14 +1,3 @@
-/**
- * Sends the "visit scheduled" email — fires on every single visit
- * scheduling event (not just high-urgency ones), to both the doctor and
- * the patient, so both have a paper trail with the join link.
- *
- * Subject format: "[Sender Name (Doctor/Patient)] from CareThread"
- * where the sender is whoever scheduled the visit (always the doctor,
- * since only doctors can schedule — but written generically in case that
- * ever changes).
- */
-
 const emailClient = require("./emailClient");
 
 function formatWhen(scheduledAt) {
@@ -106,11 +95,6 @@ function buildHtml({
   </div>`;
 }
 
-/**
- * Fire-and-forget-safe: never throws. Sends to both the doctor and the
- * patient. Each call to emailClient.sendEmail already no-ops cleanly and
- * logs to notification_log if email isn't configured.
- */
 async function sendVisitScheduledEmails({
   visit,
   workspaceTitle,

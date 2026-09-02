@@ -1,16 +1,3 @@
-/**
- * CareThread Assistant — a chat agent that can actually perform tasks
- * (not just answer questions) by calling real tools backed by the same
- * database the rest of the app uses. Uses Groq's OpenAI-compatible
- * tool-calling API directly (not the complete()/completeJSON() helpers
- * in groqClient.js, since those don't expose the tools param).
- *
- * Deliberately stateless server-side: no conversation is persisted to the
- * database. The client keeps the message list in memory for the session
- * and sends the full history with each request; refreshing the page
- * starts a clean conversation, by design.
- */
-
 const { v4: uuidv4 } = require("uuid");
 const { getClient, DEFAULT_MODEL } = require("./groqClient");
 const intakeAgent = require("./intakeAgent");

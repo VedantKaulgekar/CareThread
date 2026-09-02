@@ -1,18 +1,3 @@
-/**
- * Missed Visit Window Alerting — the second half of Feature 5 from the
- * CareThread solution design (the first half, summary generation, is
- * handoffAgent.js).
- *
- * Runs on an interval. For every scheduled (not yet started) visit:
- *   - 24h before scheduled_at with no reminder yet → send a reminder
- *   - 2h before scheduled_at with no urgent reminder yet → send an urgent one
- *   - scheduled_at has passed and visit never started → flag to the
- *     doctor as a missed protocol window and mark the visit 'missed'
- *
- * Every stage is idempotent (checked via the *_sent_at / *_flagged_at
- * columns) so re-running the check never double-sends.
- */
-
 const db = require("../db");
 const { sendEmail } = require("../notifications/emailClient");
 
@@ -130,9 +115,13 @@ let intervalHandle = null;
 function start() {
   if (intervalHandle) return;
   intervalHandle = setInterval(() => {
-    runOnce().catch((err) => console.error("Visit alerting job error:", err.message));
+    runOnce().catch((err) =>
+      console.error("Visit alerting job error:", err.message),
+    );
   }, CHECK_INTERVAL_MS);
-  console.log(`Visit alerting job started (checks every ${CHECK_INTERVAL_MS / 60000} min)`);
+  console.log(
+    `Visit alerting job started (checks every ${CHECK_INTERVAL_MS / 60000} min)`,
+  );
 }
 
 function stop() {
@@ -140,4 +129,11 @@ function stop() {
   intervalHandle = null;
 }
 
-module.exports = { runOnce, sendReminders, sendUrgentReminders, flagMissedVisits, start, stop };
+module.exports = {
+  runOnce,
+  sendReminders,
+  sendUrgentReminders,
+  flagMissedVisits,
+  start,
+  stop,
+};

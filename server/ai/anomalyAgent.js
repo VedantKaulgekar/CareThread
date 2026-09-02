@@ -1,19 +1,5 @@
-/**
- * Anomaly Detection Agent — Feature 4 from the CareThread solution design.
- *
- * Pure statistics, deliberately no LLM involved: checks a newly submitted
- * reading against (a) medically plausible absolute ranges and (b) the
- * patient's own historical readings for that same parameter in this
- * workspace. Never diagnoses — only flags "this looks inconsistent,
- * please re-verify," the same way a nurse would notice a surprising
- * reading and double-check it.
- */
-
 const db = require("../db");
 
-// Conservative plausible-range bounds. These exist purely to catch
-// obvious entry errors (e.g. a misplaced decimal), not to make any
-// clinical judgment about what's healthy.
 const PLAUSIBLE_RANGES = {
   temperature: { min: 90, max: 108, unit: "°F" },
   bp_systolic: { min: 60, max: 220, unit: "mmHg" },
@@ -32,14 +18,11 @@ function mean(arr) {
 
 function stdDev(arr, avg) {
   if (arr.length < 2) return 0;
-  const variance = arr.reduce((sum, v) => sum + (v - avg) ** 2, 0) / (arr.length - 1);
+  const variance =
+    arr.reduce((sum, v) => sum + (v - avg) ** 2, 0) / (arr.length - 1);
   return Math.sqrt(variance);
 }
 
-/**
- * Given a newly submitted value and the patient's past values for that
- * same field (in this workspace), returns a flag object or null.
- */
 function checkField(field, value, pastValues) {
   if (value === null || value === undefined) return null;
 
@@ -72,11 +55,12 @@ function checkField(field, value, pastValues) {
   return null;
 }
 
-/**
- * Checks a full vitals submission against the patient's history in this
- * workspace and returns an array of flags (empty if nothing looks off).
- */
-async function checkVitalsSubmission({ patientId, workspaceId, currentVisitId, reading }) {
+async function checkVitalsSubmission({
+  patientId,
+  workspaceId,
+  currentVisitId,
+  reading,
+}) {
   const historyResult = await db.query(
     `
     SELECT temperature, bp_systolic, bp_diastolic, sugar, spo2, heart_rate
@@ -89,7 +73,14 @@ async function checkVitalsSubmission({ patientId, workspaceId, currentVisitId, r
   );
 
   const rows = historyResult.rows;
-  const fields = ["temperature", "bp_systolic", "bp_diastolic", "sugar", "spo2", "heart_rate"];
+  const fields = [
+    "temperature",
+    "bp_systolic",
+    "bp_diastolic",
+    "sugar",
+    "spo2",
+    "heart_rate",
+  ];
 
   const flags = [];
   for (const field of fields) {
